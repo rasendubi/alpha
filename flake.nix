@@ -14,6 +14,8 @@
         ];
         buildInputs = [
           pkgs.llvm_12
+          pkgs.libffi
+          pkgs.libxml2
         ];
       };
   };

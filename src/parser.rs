@@ -4,11 +4,28 @@ use std::collections::HashMap;
 use logos::{Logos, Lexer};
 use crate::lexer::Token;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Expr<'a> {
     List(Vec<Expr<'a>>),
     Symbol(String),
     Number(&'a str),
+}
+
+impl<'a> Expr<'a> {
+    pub fn as_list(&self) -> Option<&[Expr]> {
+        match self {
+            Expr::List(v) => Some(&v),
+            _ => None,
+        }
+    }
+
+    pub fn as_symbol(&self) -> Option<&str> {
+        if let Expr::Symbol(s) = self {
+            Some(&s)
+        } else {
+            None
+        }
+    }
 }
 
 impl<'a> std::fmt::Display for Expr<'a> {
