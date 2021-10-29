@@ -60,7 +60,10 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
 
-        let body = self.compile_expr(&env, body_expr)?;
+        let body = self.compile_expr(&env, body_expr).map_err(|err| {
+            unsafe { function.delete() };
+            err
+        })?;
         self.builder.build_return(Some(&body));
 
         if function.verify(true) {
