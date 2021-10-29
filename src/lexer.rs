@@ -13,7 +13,7 @@ pub enum Token<'a> {
 
     #[token(":", slice)]
     #[token(".", slice)]
-    #[regex(r"[\pL_][\pL\pN]*", slice)]
+    #[regex(r"[\pL_][\pL\pN_]*", slice)]
     #[regex(r"[\pS!%&*/?@-]+", slice)]
     Symbol(&'a str),
 
