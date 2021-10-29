@@ -14,6 +14,15 @@ use env::Env;
 
 const HISTORY_FILE: &str = "history.txt";
 
+extern "C" fn f64_mul(x: f64, y: f64) -> f64 {
+    x * y
+}
+
+extern "C" fn f64_println(x: f64) -> f64 {
+    println!("{}", x);
+    x
+}
+
 fn main() {
     let mut rl = rustyline::Editor::<()>::new();
     let _ = rl.load_history(HISTORY_FILE);
@@ -30,6 +39,12 @@ fn main() {
     fpm.initialize();
 
     let mut global_env = Env::new(None);
+
+    let f64_t = context.f64_type();
+    let f64_mul_ = module.add_function("f64_mul", f64_t.fn_type(&[f64_t.into(), f64_t.into()], false), None);
+    let f64_println_ = module.add_function("f64_println", f64_t.fn_type(&[f64_t.into()], false), None);
+    global_env.insert(&"f64_mul", f64_mul_.as_global_value().as_basic_value_enum());
+    global_env.insert(&"f64_println", f64_println_.as_global_value().as_basic_value_enum());
 
     // TODO: properly split into modules, so we do not re-create execution engine on every input
     // let ee = module.create_jit_execution_engine(OptimizationLevel::None).unwrap();
@@ -49,6 +64,8 @@ fn main() {
                                     if name.starts_with("*anonymous*") {
                                         unsafe {
                                             let ee = module.create_jit_execution_engine(OptimizationLevel::None).unwrap();
+                                            ee.add_global_mapping(&f64_mul_, f64_mul as usize);
+                                            ee.add_global_mapping(&f64_println_, f64_println as usize);
                                             match ee.get_function::<unsafe extern "C" fn() -> f64>(&name) {
                                                 Ok(f) => {
                                                     println!("{}", f.call());
@@ -81,6 +98,7 @@ fn main() {
             }
         }
 
+        // println!("\nModule:");
         // module.print_to_stderr();
     }
     rl.save_history(HISTORY_FILE).unwrap();
