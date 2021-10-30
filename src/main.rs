@@ -1,3 +1,6 @@
+mod symbol;
+mod sexp;
+mod exp;
 mod parser;
 mod lexer;
 mod compiler;
@@ -11,6 +14,8 @@ use inkwell::values::BasicValue;
 use parser::Parser;
 use compiler::Compiler;
 use env::Env;
+use exp::lower_sexp;
+use symbol::SymbolInterner;
 
 const HISTORY_FILE: &str = "history.txt";
 
@@ -49,6 +54,8 @@ fn main() {
     // TODO: properly split into modules, so we do not re-create execution engine on every input
     // let ee = module.create_jit_execution_engine(OptimizationLevel::None).unwrap();
 
+    let mut interner = SymbolInterner::new();
+
     loop {
         let mline = rl.readline("user> ");
         match mline {
@@ -57,6 +64,7 @@ fn main() {
                 while parser.has_input() {
                     match parser.parse() {
                         Ok(expr) => {
+                            println!("after lowering: {:?}", lower_sexp(&expr, &mut interner));
                             match Compiler::compile(&context, &module, &fpm, &global_env, &expr) {
                                 Ok(f) => {
                                     f.print_to_stderr();

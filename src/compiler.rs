@@ -7,7 +7,7 @@ use inkwell::passes::PassManager;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, CallableValue};
 
-use crate::parser::Expr;
+use crate::sexp::SExp;
 use crate::env::Env;
 
 pub struct Compiler<'a, 'ctx> {
@@ -24,7 +24,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         module: &'a Module<'ctx>,
         pass_manager: &'a PassManager<FunctionValue<'ctx>>,
         env: &'a Env<'a, BasicValueEnum<'ctx>>,
-        expr: &Expr
+        expr: &SExp
     ) -> Result<FunctionValue<'ctx>, &'static str> {
         let mut compiler = Compiler {
             context,
@@ -35,7 +35,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         };
 
         match expr {
-            Expr::List(v) if v.get(0) == Some(&Expr::Symbol("fn".to_string())) => {
+            SExp::List(v) if v.get(0) == Some(&SExp::Symbol("fn")) => {
                 compiler.compile_fn(expr)
             }
             _ => {
@@ -44,7 +44,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         }
     }
 
-    fn compile_fn(&mut self, expr: &Expr) -> Result<FunctionValue<'ctx>, &'static str> {
+    fn compile_fn(&mut self, expr: &SExp) -> Result<FunctionValue<'ctx>, &'static str> {
         let v = expr.as_list().expect("compile_fn called with non-list");
 
         let proto = v.get(1).ok_or("function prototype is missing")?;
@@ -77,10 +77,10 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         }
     }
 
-    fn compile_anonymous_fn(&mut self, expr: &Expr) -> Result<FunctionValue<'ctx>, &'static str> {
-        let expr = Expr::List(vec![Expr::Symbol("fn".into()),
-                                   Expr::List(vec![Expr::Symbol("call".into()),
-                                                   Expr::Symbol("*anonymous*".into())]),
+    fn compile_anonymous_fn(&mut self, expr: &SExp) -> Result<FunctionValue<'ctx>, &'static str> {
+        let expr = SExp::List(vec![SExp::Symbol("fn".into()),
+                                   SExp::List(vec![SExp::Symbol("call".into()),
+                                                   SExp::Symbol("*anonymous*".into())]),
                                    (*expr).clone()
         ]);
         self.compile_fn(&expr)
@@ -90,7 +90,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     fn compile_prototype<'e>(
         &mut self,
         env: &'e Env<'e, BasicValueEnum<'ctx>>,
-        expr: &Expr
+        expr: &SExp
     ) -> Result<(FunctionValue<'ctx>, Env<'e, BasicValueEnum<'ctx>>), &'static str> {
         let v = expr.as_list().ok_or("compile_prototype is called with non-list")?;
         let name = v[1].as_symbol().ok_or("function name is not a symbol")?;
@@ -114,10 +114,10 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     fn compile_expr(
         &mut self,
         env: &Env<BasicValueEnum<'ctx>>,
-        expr: &Expr
+        expr: &SExp
     ) -> Result<BasicValueEnum<'ctx>, &'static str> {
         match expr {
-            Expr::Symbol(s) => {
+            SExp::Symbol(s) => {
                 match env.lookup(&s) {
                     Some(value) => Ok(value.as_basic_value_enum()),
                     None => {
@@ -125,10 +125,10 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                     }
                 }
             }
-            Expr::Number(s) => {
+            SExp::Number(s) => {
                 Ok(self.context.f64_type().const_float(s.parse().unwrap()).as_basic_value_enum())
             }
-            Expr::List(v) => {
+            SExp::List(v) => {
                 match v[0].as_symbol().unwrap() {
                     "call" => {
                         if let Some(s) = v[1].as_symbol() {
