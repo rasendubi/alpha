@@ -124,7 +124,12 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 if let &Exp::Symbol(s) = &*call.fun {
                     if Some(s) == self.interner.get("+") {
                         let mut acc = self.context.f64_type().const_float(0.0);
-                        for arg in &call.args {
+                        if call.args.len() == 0 {
+                            return Ok(acc.into());
+                        }
+
+                        acc = self.compile_exp(env, &call.args[0])?.into_float_value();
+                        for arg in &call.args[1..] {
                             let arg = self.compile_exp(env, arg)?;
                             acc = self.builder.build_float_add(acc, arg.into_float_value(), "add");
                         }
