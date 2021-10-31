@@ -21,7 +21,6 @@ type ParseTable<'a> = HashMap<ParseKey<'a>, ParseRule<'a>>;
 pub enum ParseKey<'a> {
     Integer,
     Float,
-    Punctuation(&'a str),
     Symbol(&'a str),
     String,
     Char,
@@ -32,7 +31,6 @@ impl<'a> From<&Token<'a>> for ParseKey<'a> {
         match token {
             Token::Integer(_) => Integer,
             Token::Float(_) => Float,
-            Token::Punctuation(p) => Punctuation(p),
             Token::Symbol(s) => Symbol(s),
             Token::String(_) => String,
             Token::Char(_) => Char,
@@ -102,7 +100,7 @@ impl<'a> Parser<'a> {
             { Symbol("*")      =>                      infix: 70, parse_binary },
             { Symbol("/")      =>                      infix: 70, parse_binary },
 
-            { Punctuation("(") => prefix: parse_group, infix: 90, parse_call   },
+            { Symbol("(")      => prefix: parse_group, infix: 90, parse_call   },
             { Symbol(".")      =>                      infix: 90, parse_dot    },
         };
         Parser {
@@ -196,7 +194,7 @@ fn parse_group<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
     p.lexer.next(); // (
     let expr = p.parse_expr()?;
     match p.lexer.next() {
-        Some(Token::Punctuation(")")) => {},
+        Some(Token::Symbol(")")) => {},
         _ => bail!("expected )"),
     }
     Ok(expr)
@@ -232,18 +230,18 @@ fn parse_binary<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<
 fn parse_dot<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
     p.lexer.next(); // .
     let symbol = p.parse_symbol()?;
-    dbg!(&symbol);
-    if p.lexer.peek() == Some(&Token::Punctuation("(")) {
-        // parse as a function call
+    if p.lexer.peek() == Some(&Token::Symbol("(")) {
+        // parse as a function call:
+        // x.f(y) => f(x, y)
         let mut v = Vec::new();
         v.push(SExp::Symbol("call"));
         v.push(symbol);
         v.push(left);
 
         p.lexer.next(); // (
-        while p.lexer.peek().is_some() && p.lexer.peek() != Some(&Token::Punctuation(")")) {
+        while p.lexer.peek().is_some() && p.lexer.peek() != Some(&Token::Symbol(")")) {
             v.push(p.parse_expr()?);
-            if p.lexer.peek() == Some(&Token::Punctuation(",")) {
+            if p.lexer.peek() == Some(&Token::Symbol(",")) {
                 p.lexer.next();
             }
         }
@@ -265,9 +263,9 @@ fn parse_call<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<dy
     v.push(SExp::Symbol("call"));
     v.push(left);
 
-    while p.lexer.peek().is_some() && p.lexer.peek() != Some(&Token::Punctuation(")")) {
+    while p.lexer.peek().is_some() && p.lexer.peek() != Some(&Token::Symbol(")")) {
         v.push(p.parse_expr()?);
-        if p.lexer.peek() == Some(&Token::Punctuation(",")) {
+        if p.lexer.peek() == Some(&Token::Symbol(",")) {
             p.lexer.next();
         }
     }
