@@ -109,6 +109,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         exp: &Exp
     ) -> Result<BasicValueEnum<'ctx>, Box<dyn Error>> {
         let result = match exp {
+            Exp::Type(_) => panic!("compile_exp() is called on Type"),
             Exp::Symbol(s) => {
                 match env.lookup(*s) {
                     Some(value) => value.as_basic_value_enum(),
@@ -117,8 +118,11 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                     }
                 }
             }
-            Exp::Number(n) => {
+            Exp::Float(n) => {
                 self.context.f64_type().const_float(*n).as_basic_value_enum()
+            }
+            Exp::Integer(n) => {
+                self.context.i64_type().const_int(*n as u64, true).as_basic_value_enum()
             }
             Exp::Call(call) => {
                 if let &Exp::Symbol(s) = &*call.fun {

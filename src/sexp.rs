@@ -1,8 +1,10 @@
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SExp<'a> {
     List(Vec<SExp<'a>>),
+    // TODO: this should already be interned here to allow macros + gensym in the Alpha.
     Symbol(&'a str),
-    Number(&'a str),
+    Integer(&'a str),
+    Float(&'a str),
 }
 
 impl<'a> SExp<'a> {
@@ -41,7 +43,10 @@ impl<'a> std::fmt::Display for SExp<'a> {
             SExp::Symbol(s) => {
                 write!(f, ":{}", s)
             }
-            SExp::Number(n) => {
+            SExp::Integer(n) => {
+                write!(f, "{}", n)
+            }
+            SExp::Float(n) => {
                 write!(f, "{}", n)
             }
         }
