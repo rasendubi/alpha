@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
+use crate::symbol::Symbol;
+
 pub struct Env<'a, T> {
     parent: Option<&'a Env<'a, T>>,
-    bindings: HashMap<String, T>,
+    bindings: HashMap<Symbol, T>,
 }
 
 impl<'a, T> Env<'a, T> {
@@ -13,8 +15,8 @@ impl<'a, T> Env<'a, T> {
         }
     }
 
-    pub fn lookup(&self, name: &str) -> Option<&T> {
-        match self.bindings.get(name) {
+    pub fn lookup(&self, name: Symbol) -> Option<&T> {
+        match self.bindings.get(&name) {
             None => {
                 if let Some(p) = self.parent {
                     p.lookup(name)
@@ -26,7 +28,7 @@ impl<'a, T> Env<'a, T> {
         }
     }
 
-    pub fn insert<S: ToString>(&mut self, name: &S, value: T) {
-        self.bindings.insert(name.to_string(), value);
+    pub fn insert(&mut self, name: Symbol, value: T) {
+        self.bindings.insert(name, value);
     }
 }
