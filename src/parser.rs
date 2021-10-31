@@ -103,7 +103,7 @@ impl<'a> Parser<'a> {
             { Symbol("/")      =>                      infix: 70, parse_binary },
 
             { Punctuation("(") => prefix: parse_group, infix: 90, parse_call   },
-            { Punctuation(".") =>                      infix: 90, parse_binary },
+            { Symbol(".")      =>                      infix: 90, parse_dot    },
         };
         Parser {
             lexer: Token::lexer(input).peekable(),
@@ -227,6 +227,35 @@ fn parse_binary<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<
         left,
         right,
     ]))
+}
+
+fn parse_dot<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+    p.lexer.next(); // .
+    let symbol = p.parse_symbol()?;
+    dbg!(&symbol);
+    if p.lexer.peek() == Some(&Token::Punctuation("(")) {
+        // parse as a function call
+        let mut v = Vec::new();
+        v.push(SExp::Symbol("call"));
+        v.push(symbol);
+        v.push(left);
+
+        p.lexer.next(); // (
+        while p.lexer.peek().is_some() && p.lexer.peek() != Some(&Token::Punctuation(")")) {
+            v.push(p.parse_expr()?);
+            if p.lexer.peek() == Some(&Token::Punctuation(",")) {
+                p.lexer.next();
+            }
+        }
+        if p.lexer.peek().is_none() {
+            bail!(") is expected")
+        }
+        p.lexer.next(); // )
+
+        Ok(SExp::List(v))
+    } else {
+        Ok(SExp::List(vec![SExp::Symbol("."), left, symbol]))
+    }
 }
 
 fn parse_call<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
