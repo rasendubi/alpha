@@ -1,4 +1,4 @@
-use std::pin::Pin;
+use std::error::Error;
 
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
@@ -10,6 +10,7 @@ use crate::symbol::SymbolInterner;
 use crate::env::Env;
 use crate::parser::Parser;
 use crate::compiler::Compiler;
+use crate::sexp::SExp;
 use crate::exp;
 use crate::exp::{Exp, lower_sexp};
 
@@ -51,69 +52,52 @@ impl<'ctx> ExecutionSession<'ctx> {
         }
     }
 
-    pub fn run_line(&mut self, line: &str) {
+    pub fn run_line(&mut self, line: &str) -> Result<(), Box<dyn Error>> {
         let mut parser = Parser::new(line);
         while parser.has_input() {
-            match parser.parse() {
-                Err(e) => {
-                    println!("Error: {}", e);
-                    break
-                },
-                Ok(sexp) => {
-                    match lower_sexp(&sexp, &mut self.interner) {
-                        Err(err) => {
-                            println!("Error: {}", err);
-                        }
-                        Ok(exp) => {
-                            println!("lowered: {:?}", &exp);
-                            let (def, is_anonymous) = match exp {
-                                Exp::Function(f) => (f, false),
-                                Exp::Type(_) => continue,
-                                e => (
-                                    exp::Function {
-                                        prototype: exp::FunctionPrototype {
-                                            name: self.interner.intern("*anonymous*"),
-                                            params: vec![],
-                                        },
-                                        body: Some(Box::new(e)),
-                                    },
-                                    true
-                                ),
-                            };
-
-                            match Compiler::compile(&self.interner, &self.context, &self.module, &self.fpm, &self.global_env, &def) {
-                                Err(err) => {
-                                    println!("Error compiling function: {}", err);
-                                }
-                                Ok(f) => {
-                                    f.print_to_stderr();
-                                    let name = f.get_name().to_string_lossy();
-                                    if is_anonymous {
-                                        unsafe {
-                                            let ee = self.module.create_jit_execution_engine(OptimizationLevel::None).unwrap();
-                                            // ee.add_global_mapping(&f64_mul_, f64_mul as usize);
-                                            // ee.add_global_mapping(&f64_println_, f64_println as usize);
-                                            match ee.get_function::<unsafe extern "C" fn() -> f64>(&name) {
-                                                Ok(f) => {
-                                                    println!("{}", f.call());
-                                                }
-                                                Err(err) => {
-                                                    println!("Error getting function: {}", err);
-                                                }
-                                            }
-                                            ee.remove_module(&self.module).unwrap();
-                                            f.delete();
-                                        }
-                                    } else {
-                                        self.global_env.insert(def.prototype.name, f.as_global_value().as_basic_value_enum());
-                                    }
-                                }
-                            }
-
-                        }
-                    }
-                }
-            }
+            self.run_sexp(&parser.parse()?)?;
         }
+
+        Ok(())
+    }
+
+    fn run_sexp(&mut self, sexp: &SExp) -> Result<(), Box<dyn Error>> {
+        let exp = lower_sexp(&sexp, &mut self.interner)?;
+        println!("lowered: {:?}", &exp);
+
+        let (def, is_anonymous) = match exp {
+            Exp::Type(_) => return Ok(()),
+            Exp::Function(f) => (f, false),
+            e => (
+                exp::Function {
+                    prototype: exp::FunctionPrototype {
+                        name: self.interner.intern("*anonymous*"),
+                        params: vec![],
+                    },
+                    body: Some(Box::new(e)),
+                },
+                true
+            ),
+        };
+
+        let f = Compiler::compile(&self.interner, &self.context, &self.module, &self.fpm, &self.global_env, &def)?;
+        f.print_to_stderr();
+
+        let name = f.get_name().to_string_lossy();
+        if is_anonymous {
+            unsafe {
+                let ee = self.module.create_jit_execution_engine(OptimizationLevel::None).unwrap();
+                // ee.add_global_mapping(&f64_mul_, f64_mul as usize);
+                // ee.add_global_mapping(&f64_println_, f64_println as usize);
+                let fun = ee.get_function::<unsafe extern "C" fn() -> f64>(&name)?;
+                println!("{}", fun.call());
+                ee.remove_module(&self.module).unwrap();
+                f.delete();
+            }
+        } else {
+            self.global_env.insert(def.prototype.name, f.as_global_value().as_basic_value_enum());
+        }
+
+        Ok(())
     }
 }

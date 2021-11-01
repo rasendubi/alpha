@@ -29,23 +29,22 @@ fn main() {
     let context = Context::create();
     let mut es = ExecutionSession::new(&context);
 
+    let mut run_line = |line: &str| {
+        match es.run_line(line) {
+            Ok(()) => {},
+            Err(err) => println!("Error: {}", err),
+        }
+    };
+
     // poor man's standard library
-    es.run_line("type i64 = integer(64)");
-    es.run_line("type f64 = float(64)");
+    run_line("type i64 = integer(64)");
+    run_line("type f64 = float(64)");
 
     loop {
-        let mline = rl.readline("user> ");
-        match mline {
-            Err(_x) => {
-                break
-            }
-            Ok(line) => {
-                es.run_line(&line);
-            }
+        match rl.readline("user> ") {
+            Err(_) => break,
+            Ok(line) => run_line(&line),
         }
-
-        // println!("\nModule:");
-        // module.print_to_stderr();
     }
     rl.save_history(HISTORY_FILE).unwrap();
 }
