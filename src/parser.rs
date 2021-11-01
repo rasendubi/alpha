@@ -100,6 +100,8 @@ impl<'a> Parser<'a> {
             { Symbol("*")      =>                      infix: 70, parse_binary },
             { Symbol("/")      =>                      infix: 70, parse_binary },
 
+            { Symbol(":")      =>                      infix: 80, parse_binary },
+
             { Symbol("(")      => prefix: parse_group, infix: 90, parse_call   },
             { Symbol(".")      =>                      infix: 90, parse_dot    },
         };
@@ -167,10 +169,6 @@ fn parse_type<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
     p.lexer.next(); // type
     let mut expr = Vec::with_capacity(3);
     expr.push(SExp::Symbol("type"));
-    expr.push(p.parse_symbol()?); // type name
-    if p.lexer.next() != Some(Token::Symbol("=")) {
-        bail!("expected '=' after type identifier")
-    }
     expr.push(p.parse_expr()?);
 
     Ok(SExp::List(expr))

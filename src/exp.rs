@@ -22,6 +22,7 @@ pub enum Exp {
 #[derive(Debug, PartialEq, Clone)]
 pub struct TypeDefinition {
     pub name: Symbol,
+    // TODO: superclass
     pub specifier: TypeSpecifier,
 }
 
@@ -46,6 +47,7 @@ pub struct FunctionPrototype {
 #[derive(Debug, PartialEq, Clone)]
 pub struct FunctionParameter {
     pub name: Symbol,
+    pub typ: Option<Symbol>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -59,19 +61,11 @@ pub fn lower_sexp(sexp: &SExp, interner: &mut SymbolInterner) -> Result<Exp, Box
     let exp = match sexp {
         SExp::Integer(n) => Exp::Integer(n.parse().expect("cannot parse i64")),
         SExp::Float(n) => Exp::Float(n.parse().expect("cannot parse f64")),
-        SExp::Symbol(s) => Exp::Symbol(interner.get_or_intern(s)),
+        SExp::Symbol(s) => Exp::Symbol(interner.intern(s)),
         SExp::List(v) => {
-            match v[0].as_symbol().expect("List head is not symbol") {
-                "type" => {
-                    let name = v[1].as_symbol()
-                        .ok_or_else(|| simple_error!("type name should be a symbol, {} given", v[1]))?;
-                    let name = interner.get_or_intern(name);
-                    let specifier = lower_type_specifier(&v[2], interner)?;
-                    Exp::Type(TypeDefinition{ name, specifier })
-                }
-                "fn" => {
-                    Exp::Function(lower_function(&v[1], interner)?)
-                }
+            match v[0].as_symbol().expect("list head is not a symbol") {
+                "type" => Exp::Type(lower_type_definition(&v[1], interner)?),
+                "fn" => Exp::Function(lower_function(&v[1], interner)?),
                 "call" => {
                     let fun = Box::new(lower_sexp(&v[1], interner)?);
                     let mut args = Vec::new();
@@ -89,11 +83,25 @@ pub fn lower_sexp(sexp: &SExp, interner: &mut SymbolInterner) -> Result<Exp, Box
     Ok(exp)
 }
 
-fn lower_type_specifier(sexp: &SExp, interner: &mut SymbolInterner) -> Result<TypeSpecifier, Box<dyn Error>> {
-    let specifier = match lower_sexp(sexp, interner)? {
+fn lower_type_definition(sexp: &SExp, interner: &mut SymbolInterner) -> Result<TypeDefinition, Box<dyn Error>> {
+    match lower_sexp(sexp, interner)? {
+        Exp::Call(Call{ fun, args }) if *fun == Exp::Symbol(interner.intern("=")) => {
+            let name = match &args[0] {
+                Exp::Symbol(s) => *s,
+                e => bail!("type name must be a symbol, {:?} given", e),
+            };
+            let specifier = lower_type_specifier(&args[1], interner)?;
+            Ok(TypeDefinition{ name, specifier })
+        }
+        e => bail!("type definition should have a form of: TypeName = <type specifier>, {:?} given", e)
+    }
+}
+
+fn lower_type_specifier(exp: &Exp, interner: &mut SymbolInterner) -> Result<TypeSpecifier, Box<dyn Error>> {
+    let specifier = match exp {
         Exp::Call(Call{ fun, args }) => {
-            match *fun {
-                Exp::Symbol(s) if s == interner.get_or_intern("integer") => {
+            match **fun {
+                Exp::Symbol(s) if s == interner.intern("integer") => {
                     if args.len() != 1 {
                         bail!("integer() takes exactly 1 argument, {} given", args.len());
                     }
@@ -103,7 +111,7 @@ fn lower_type_specifier(sexp: &SExp, interner: &mut SymbolInterner) -> Result<Ty
                     };
                     TypeSpecifier::Integer(n.try_into().unwrap())
                 }
-                Exp::Symbol(s) if s == interner.get_or_intern("float") => {
+                Exp::Symbol(s) if s == interner.intern("float") => {
                     if args.len() != 1 {
                         bail!("float() takes exactly 1 argument, {} given", args.len());
                     }
@@ -119,7 +127,7 @@ fn lower_type_specifier(sexp: &SExp, interner: &mut SymbolInterner) -> Result<Ty
                 _ => bail!("unknown type specifier")
             }
         }
-        _ => bail!("type specifier should be a call, given: {}", sexp)
+        e => bail!("type specifier should be a call, given: {:?}", e)
     };
     Ok(specifier)
 }
@@ -143,7 +151,7 @@ fn lower_function_prototype(sexp: &SExp, interner: &mut SymbolInterner) -> Resul
         bail!("function definition should start with call-like sexp, it starts with: {}", proto[0]);
     }
 
-    let name = interner.get_or_intern(proto[1].as_symbol().ok_or_else(|| simple_error!("function name should be a symbol, given: {}", proto[1]))?);
+    let name = interner.intern(proto[1].as_symbol().ok_or_else(|| simple_error!("function name should be a symbol, given: {}", proto[1]))?);
     let mut params = Vec::new();
     for param in &proto[2..] {
         params.push(lower_function_parameter(param, interner)?);
@@ -153,7 +161,18 @@ fn lower_function_prototype(sexp: &SExp, interner: &mut SymbolInterner) -> Resul
 }
 
 fn lower_function_parameter(sexp: &SExp, interner: &mut SymbolInterner) -> Result<FunctionParameter, Box<dyn Error>> {
-    let name = sexp.as_symbol().ok_or_else(|| simple_error!("function parameter must be a symbol, given: {}", sexp))?;
-    let name = interner.get_or_intern(name);
-    Ok(FunctionParameter{ name })
+    let param = match sexp {
+        SExp::Symbol(s) => FunctionParameter{ name: interner.intern(s), typ: None },
+        SExp::List(v)
+            if v[0] == SExp::Symbol("call")
+            && v[1] == SExp::Symbol(":")
+            && v[2].as_symbol().is_some()
+            && v[3].as_symbol().is_some() =>
+                FunctionParameter {
+                    name: interner.intern(v[2].as_symbol().unwrap()),
+                    typ: Some(interner.intern(v[3].as_symbol().unwrap())),
+                },
+        e => bail!("cannot parse function parameter: {}", e),
+    };
+    Ok(param)
 }
