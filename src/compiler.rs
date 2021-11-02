@@ -1,12 +1,13 @@
 use std::convert::TryFrom;
 use std::error::Error;
 
+use inkwell::AddressSpace;
 use inkwell::context::Context;
 use inkwell::builder::Builder;
 use inkwell::module::Module;
 use inkwell::passes::PassManager;
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, CallableValue};
+use inkwell::values::{AnyValue, BasicValue, BasicValueEnum, FunctionValue, CallableValue, PointerValue};
 
 use simple_error::bail;
 
@@ -46,6 +47,12 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         compiler.compile_fn(f)
     }
 
+    fn build_allocate(&mut self, size: u64, name: &str) -> PointerValue<'ctx> {
+        self.builder.build_call(self.module.get_function("gc_allocate").unwrap(), &[
+            self.context.i64_type().const_int(size, false).as_basic_value_enum(),
+        ], name).as_any_value_enum().into_pointer_value()
+    }
+
     fn compile_fn(&mut self, f: &exp::Function) -> Result<FunctionValue<'ctx>, Box<dyn Error>> {
         let (function, env) = self.compile_prototype(self.global_env, &f.prototype)?;
 
@@ -83,19 +90,21 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     ) -> Result<(FunctionValue<'ctx>, Env<'e, BasicValueEnum<'ctx>>), Box<dyn Error>> {
         let name = self.interner.resolve(proto.name).unwrap();
 
-        let ret_type = self.context.f64_type();
-        let params_types = std::iter::repeat(ret_type)
+        let ptr_t = self.context.i8_type().ptr_type(AddressSpace::Generic);
+        let ret_type = ptr_t;
+        let param_type = ptr_t;
+        let params_types = std::iter::repeat(param_type)
             .take(proto.params.len())
             .map(|f| f.into())
             .collect::<Vec<BasicTypeEnum>>();
-        let fn_type = self.context.f64_type().fn_type(&params_types, false);
+        let fn_type = ret_type.fn_type(&params_types, false);
         let fn_val = self.module.add_function(&name, fn_type, None);
 
         let mut env = Env::new(Some(env));
         for (i, param) in fn_val.get_param_iter().enumerate() {
             let param_symbol = proto.params[i].name;
             let param_name = self.interner.resolve(param_symbol).unwrap();
-            let value = param.into_float_value();
+            let value = param.into_pointer_value();
             value.set_name(&param_name);
             env.insert(param_symbol, value.as_basic_value_enum());
         }
@@ -119,27 +128,41 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 }
             }
             Exp::Float(n) => {
-                self.context.f64_type().const_float(*n).as_basic_value_enum()
+                let ptr = self.build_allocate(8, "fptr_any");
+                let fptr = self.builder.build_pointer_cast(
+                    ptr,
+                    self.context.f64_type().ptr_type(AddressSpace::Generic),
+                    "fptr");
+                let value = self.context.f64_type().const_float(*n).as_basic_value_enum();
+                self.builder.build_store(fptr, value);
+                ptr.into()
             }
             Exp::Integer(n) => {
-                self.context.i64_type().const_int(*n as u64, true).as_basic_value_enum()
+                let ptr = self.build_allocate(8, "iptr_any");
+                let iptr = self.builder.build_pointer_cast(
+                    ptr,
+                    self.context.i64_type().ptr_type(AddressSpace::Generic),
+                    "iptr");
+                let value = self.context.i64_type().const_int(*n as u64, true).as_basic_value_enum();
+                self.builder.build_store(iptr, value);
+                ptr.into()
             }
             Exp::Call(call) => {
-                if let &Exp::Symbol(s) = &*call.fun {
-                    if Some(s) == self.interner.get("+") {
-                        let mut acc = self.context.f64_type().const_float(0.0);
-                        if call.args.len() == 0 {
-                            return Ok(acc.into());
-                        }
+                // if let &Exp::Symbol(s) = &*call.fun {
+                //     if Some(s) == self.interner.get("+") {
+                //         let mut acc = self.context.f64_type().const_float(0.0);
+                //         if call.args.len() == 0 {
+                //             return Ok(acc.into());
+                //         }
 
-                        acc = self.compile_exp(env, &call.args[0])?.into_float_value();
-                        for arg in &call.args[1..] {
-                            let arg = self.compile_exp(env, arg)?;
-                            acc = self.builder.build_float_add(acc, arg.into_float_value(), "add");
-                        }
-                        return Ok(acc.into());
-                    }
-                }
+                //         acc = self.compile_exp(env, &call.args[0])?.into_float_value();
+                //         for arg in &call.args[1..] {
+                //             let arg = self.compile_exp(env, arg)?;
+                //             acc = self.builder.build_float_add(acc, arg.into_float_value(), "add");
+                //         }
+                //         return Ok(acc.into());
+                //     }
+                // }
 
                 let f = CallableValue::try_from(self.compile_exp(env, &call.fun)?.into_pointer_value())
                     .map_err(|_| "unable to call function")?;

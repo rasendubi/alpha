@@ -15,6 +15,7 @@ impl SymbolInterner {
         Symbol(self.0.get_or_intern(s))
     }
 
+    #[allow(unused)]
     pub fn get<T: AsRef<str>>(&self, s: T) -> Option<Symbol> {
         self.0.get(s).map(Symbol)
     }
