@@ -73,6 +73,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                     prototype: exp::FunctionPrototype {
                         name: self.interner.intern("*anonymous*"),
                         params: vec![],
+                        result_type: None,
                     },
                     body: Some(Box::new(e)),
                 },

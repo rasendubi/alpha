@@ -42,6 +42,7 @@ pub struct Function {
 pub struct FunctionPrototype {
     pub name: Symbol,
     pub params: Vec<FunctionParameter>,
+    pub result_type: Option<Symbol>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -146,18 +147,35 @@ fn lower_function(sexp: &SExp, interner: &mut SymbolInterner) -> Result<Function
 
 fn lower_function_prototype(sexp: &SExp, interner: &mut SymbolInterner) -> Result<FunctionPrototype, Box<dyn Error>> {
     // (:fn (:call name params...) body)
+    // (:fn (:call :: (:call name params...) result_type) body)
     let proto = sexp.as_list().ok_or_else(|| simple_error!("function definition should start with call-like sexp, given: {}", sexp))?;
     if proto[0].as_symbol().unwrap() != "call" {
         bail!("function definition should start with call-like sexp, it starts with: {}", proto[0]);
     }
 
-    let name = interner.intern(proto[1].as_symbol().ok_or_else(|| simple_error!("function name should be a symbol, given: {}", proto[1]))?);
+    let head = proto[1].as_symbol().ok_or_else(|| simple_error!("function name should be a symbol, given: {}", proto[1]))?;
+    let (proto, result_type) = if head == ":" {
+        let result_type = proto[3].as_symbol().ok_or_else(|| simple_error!("function return types should be a symbol, {} given", proto[3]))?;
+        let proto = proto[2].as_list().ok_or_else(|| simple_error!("function definition should start with call-like sexp, given: {}", sexp))?;
+        if proto[0].as_symbol().unwrap() != "call" {
+            bail!("function definition should start with call-like sexp, it starts with: {}", proto[0]);
+        }
+        if proto[1].as_symbol().is_none() {
+            bail!("function name should be a symbol, given: {}", proto[1]);
+        }
+
+        (proto, Some(interner.intern(result_type)))
+    } else {
+        (proto, None)
+    };
+
+    let name = interner.intern(head);
     let mut params = Vec::new();
     for param in &proto[2..] {
         params.push(lower_function_parameter(param, interner)?);
     }
 
-    Ok(FunctionPrototype{ name, params })
+    Ok(FunctionPrototype{ name, params, result_type })
 }
 
 fn lower_function_parameter(sexp: &SExp, interner: &mut SymbolInterner) -> Result<FunctionParameter, Box<dyn Error>> {
