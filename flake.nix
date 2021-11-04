@@ -11,10 +11,10 @@
       in pkgs.mkShell {
         nativeBuildInputs = [
           pkgs.rustup
-          pkgs.gdb
+          pkgs.lldb
         ];
         buildInputs = [
-          pkgs.llvm_12
+          pkgs.llvm_13
           pkgs.libffi
           pkgs.libxml2
         ];

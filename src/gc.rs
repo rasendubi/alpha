@@ -39,8 +39,11 @@ impl Gc {
 
 
     pub fn allocate(&mut self, size: usize) -> *mut u8 {
+        println!("allocate({})", size);
         unsafe {
-            let result = self.cur;
+            let size = size + 8; // typetag
+            let result = self.cur.add(8);
+
             let next = self.cur.add(size);
             if next > self.end {
                 panic!("gc: out of memory");

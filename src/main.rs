@@ -8,7 +8,7 @@ mod env;
 mod execution_session;
 mod gc;
 
-use inkwell::context::Context;
+use llvm::context::Context;
 
 use crate::execution_session::ExecutionSession;
 
@@ -18,7 +18,7 @@ fn main() {
     let mut rl = rustyline::Editor::<()>::new();
     let _ = rl.load_history(HISTORY_FILE);
 
-    let context = Context::create();
+    let context = Context::new();
     let mut es = ExecutionSession::new(&context);
 
     let mut run_line = |line: &str| {
@@ -35,6 +35,4 @@ fn main() {
         }
     }
     rl.save_history(HISTORY_FILE).unwrap();
-
-    es.dump_module();
 }
