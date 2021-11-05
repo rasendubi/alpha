@@ -113,18 +113,21 @@ impl LLJIT {
 // them.
 #[repr(C)]
 #[derive(Debug)]
+#[allow(non_snake_case)]
 pub struct LLVMJITCSymbolMapPair {
     Name: LLVMOrcSymbolStringPoolEntryRef,
     Sym: LLVMJITEvaluatedSymbol,
 }
 #[repr(C)]
 #[derive(Debug)]
+#[allow(non_snake_case)]
 pub struct LLVMJITEvaluatedSymbol {
     Address: LLVMOrcExecutorAddress,
     Flags: LLVMJITSymbolFlags,
 }
 #[repr(C)]
 #[derive(Debug)]
+#[allow(non_snake_case)]
 pub struct LLVMJITSymbolFlags {
     GenericFlags: u8,
     TargetFlags: u8,
