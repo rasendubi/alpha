@@ -108,6 +108,11 @@ impl Type {
         unsafe { Type::new(core::LLVMGetElementType(self.0)) }
     }
 
+    pub fn const_null(&self) -> Value {
+        assert_eq!(self.kind(), TypeKind::LLVMPointerTypeKind);
+        unsafe { Value::new(core::LLVMConstNull(self.0)) }
+    }
+
     /// Obtain a function type consisting of a specified signature.
     ///
     /// # Examples

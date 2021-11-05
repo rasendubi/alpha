@@ -1,8 +1,10 @@
-pub mod context;
-pub mod module;
+pub mod basic_block;
 pub mod builder;
+pub mod context;
+pub mod error;
+pub mod module;
+pub mod orc;
+pub mod pass_manager;
+pub mod string;
 pub mod types;
 pub mod values;
-pub mod string;
-pub mod basic_block;
-pub mod pass_manager;

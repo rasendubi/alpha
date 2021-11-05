@@ -1,14 +1,12 @@
-mod symbol;
-mod sexp;
-mod exp;
-mod parser;
-mod lexer;
 mod compiler;
 mod env;
 mod execution_session;
+mod exp;
 mod gc;
-
-use llvm::context::Context;
+mod lexer;
+mod parser;
+mod sexp;
+mod symbol;
 
 use crate::execution_session::ExecutionSession;
 
@@ -18,14 +16,11 @@ fn main() {
     let mut rl = rustyline::Editor::<()>::new();
     let _ = rl.load_history(HISTORY_FILE);
 
-    let context = Context::new();
-    let mut es = ExecutionSession::new(&context);
+    let mut es = ExecutionSession::new();
 
-    let mut run_line = |line: &str| {
-        match es.run_line(line) {
-            Ok(()) => {},
-            Err(err) => println!("Error: {}", err),
-        }
+    let mut run_line = |line: &str| match es.run_line(line) {
+        Ok(()) => {}
+        Err(err) => println!("Error: {}", err),
     };
 
     loop {

@@ -24,6 +24,10 @@ impl Context {
         unsafe { Context(core::LLVMContextCreate()) }
     }
 
+    pub(crate) unsafe fn from_ref(context: LLVMContextRef) -> Self {
+        Context(context)
+    }
+
     /// Create a new, empty [`Module`] in the current context.
     ///
     /// # Examples

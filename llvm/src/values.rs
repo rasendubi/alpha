@@ -55,6 +55,19 @@ impl Value {
         }
     }
 
+    /// Convert constant integer to pointer.
+    pub fn const_int_to_pointer(&self, type_: Type) -> Value {
+        assert_eq!(self.kind(), ValueKind::LLVMConstantIntValueKind);
+        unsafe { Value::new(core::LLVMConstIntToPtr(self.0, type_.0)) }
+    }
+
+    pub fn global_set_initializer(&self, init: Value) {
+        assert_eq!(self.kind(), ValueKind::LLVMGlobalVariableValueKind);
+        unsafe {
+            core::LLVMSetInitializer(self.0, init.0);
+        }
+    }
+
     pub fn dump_to_stderr(&self) {
         unsafe {
             core::LLVMDumpValue(self.0);

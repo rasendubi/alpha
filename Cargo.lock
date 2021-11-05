@@ -27,6 +27,7 @@ name = "alpha"
 version = "0.1.0"
 dependencies = [
  "llvm",
+ "llvm-sys",
  "logos",
  "rustyline",
  "simple-error",
