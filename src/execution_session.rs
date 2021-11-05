@@ -36,13 +36,54 @@ unsafe extern "C" fn type_of(x: *const *const u8) -> *const u8 {
     result
 }
 
-unsafe extern "C" fn f64_mul(x: *const f64, y: *const f64) -> *const u8 {
-    let value = *x * *y;
-    let ptr = gc_allocate(std::mem::size_of::<f64>() as u64);
-    *(ptr as *mut f64) = value;
-    // println!("f64_mul({}, {}) = {} (@{:#?})", *x, *y, value, ptr);
-    ptr
-}
+// TODO: generating all primitive operations as IR from Rust code might be easier to implement (less
+// duplication).
+const STDLIB_LL: &str = r#"
+  @f64 = external global i8*
+  @i64 = external global i8*
+
+  declare i8* @gc_allocate(i64 %0)
+
+  define i8* @gc_allocate_with_typetag(i64 %size, i8* %type) {
+    %result_any = call i8* @gc_allocate(i64 8)
+    %result_typetag = bitcast i8* %result_any to i8**
+    %typetag = getelementptr i8*, i8** %result_typetag, i64 -1
+    store i8* %type, i8** %typetag
+    ret i8* %result_any
+  }
+
+  define i8* @f64_mul(i8* %a, i8* %b) {
+  entry:
+    %f64_t = load i8*, i8** @f64
+    %result_any = call i8* @gc_allocate_with_typetag(i64 8, i8* %f64_t)
+
+    %a_float_ptr = bitcast i8* %a to double*
+    %a_value = load double, double* %a_float_ptr
+    %b_float_ptr = bitcast i8* %b to double*
+    %b_value = load double, double* %b_float_ptr
+
+    %result = fmul double %a_value, %b_value
+    %result_ptr = bitcast i8* %result_any to double*
+    store double %result, double* %result_ptr
+    ret i8* %result_any
+  }
+
+  define i8* @i64_mul(i8* %a, i8* %b) {
+  entry:
+    %i64_t = load i8*, i8** @i64
+    %result_any = call i8* @gc_allocate_with_typetag(i64 8, i8* %i64_t)
+
+    %a_float_ptr = bitcast i8* %a to i64*
+    %a_value = load i64, i64* %a_float_ptr
+    %b_float_ptr = bitcast i8* %b to i64*
+    %b_value = load i64, i64* %b_float_ptr
+
+    %result = mul i64 %a_value, %b_value
+    %result_ptr = bitcast i8* %result_any to i64*
+    store i64 %result, i64* %result_ptr
+    ret i8* %result_any
+  }
+"#;
 
 pub enum EnvValue {
     Global(String),
@@ -159,18 +200,6 @@ impl<'ctx> ExecutionSession<'ctx> {
             EnvValue::Function(type_of_.get_name().to_string()),
         );
 
-        let f64_mul_ = self.globals.add_function(
-            "f64_mul",
-            ptr_t.function_type(&[ptr_t.into(), ptr_t.into()], false),
-        );
-        self.jit
-            .define_symbol("f64_mul", f64_mul as usize)
-            .unwrap_or_else(|err| panic!("{}", err.message()));
-        self.global_env.insert(
-            self.interner.intern("f64_mul"),
-            EnvValue::Function(f64_mul_.get_name().to_string()),
-        );
-
         // Add a copy of the globals module to jit, so globals with initializers are defined.
         let stdlib = self.globals.clone();
         stdlib.dump_to_stderr();
@@ -182,6 +211,28 @@ impl<'ctx> ExecutionSession<'ctx> {
             r#"
               type i64 = integer(64)
               type f64 = float(64)
+            "#,
+        )?;
+
+        // stdlib.ll defines primitive operations
+        let stdlib_ll = self
+            .context
+            .context()
+            .parse_ir_module("stdlib.ll", STDLIB_LL)?;
+        self.save_global_declarations(&stdlib_ll);
+        self.save_function_declarations(&stdlib_ll);
+        self.load_module(stdlib_ll)?;
+        self.global_env.insert(
+            self.interner.intern("f64_mul"),
+            EnvValue::Function("f64_mul".to_string()),
+        );
+        self.global_env.insert(
+            self.interner.intern("i64_mul"),
+            EnvValue::Function("i64_mul".to_string()),
+        );
+
+        self.run_line(
+            r#"
               fn *(x: f64, y: f64) = f64_mul(x, y)
             "#,
         )?;

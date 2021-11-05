@@ -4,6 +4,7 @@ use llvm_sys::core;
 use llvm_sys::prelude::*;
 
 use crate::context::Context;
+use crate::string::LLVMString;
 use crate::types::Type;
 use crate::values::Value;
 
@@ -12,6 +13,36 @@ pub struct Module(pub(crate) LLVMModuleRef);
 impl Module {
     fn new(module: LLVMModuleRef) -> Self {
         Module(module)
+    }
+
+    pub(crate) fn from_ir_string(
+        context: &Context,
+        name: &str,
+        s: &str,
+    ) -> Result<Module, LLVMString> {
+        unsafe {
+            let name = CString::new(name).unwrap();
+            let buffer = core::LLVMCreateMemoryBufferWithMemoryRangeCopy(
+                s.as_ptr() as *const i8,
+                s.len(),
+                name.as_ptr(),
+            );
+            let mut module: LLVMModuleRef = std::ptr::null_mut();
+            let mut message: *mut std::os::raw::c_char = std::ptr::null_mut();
+            let err = llvm_sys::ir_reader::LLVMParseIRInContext(
+                context.0,
+                buffer,
+                &mut module as *mut _,
+                &mut message as *mut _,
+            );
+            // Buffer seems to be captured by LLVMParseIRInContext
+            // core::LLVMDisposeMemoryBuffer(buffer);
+            if err == 0 {
+                Ok(Module(module))
+            } else {
+                Err(LLVMString::new(message))
+            }
+        }
     }
 
     pub fn new_in_context(context: &Context, name: &str) -> Self {

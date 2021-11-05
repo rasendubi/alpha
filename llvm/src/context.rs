@@ -6,6 +6,7 @@ use llvm_sys::prelude::*;
 use crate::basic_block::BasicBlock;
 use crate::builder::Builder;
 use crate::module::Module;
+use crate::string::LLVMString;
 use crate::types::Type;
 use crate::values::{Value, ValueKind};
 
@@ -39,6 +40,10 @@ impl Context {
     /// ```
     pub fn create_module(&self, name: &str) -> Module {
         Module::new_in_context(self, name)
+    }
+
+    pub fn parse_ir_module(&self, name: &str, ir: &str) -> Result<Module, LLVMString> {
+        Module::from_ir_string(self, name, ir)
     }
 
     /// Create new IR [`Builder`].
