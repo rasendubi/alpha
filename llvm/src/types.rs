@@ -3,6 +3,7 @@ use llvm_sys::prelude::*;
 
 pub use llvm_sys::LLVMTypeKind as TypeKind;
 
+use crate::context::Context;
 use crate::values::Value;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -22,6 +23,7 @@ pub struct Type(pub(crate) LLVMTypeRef);
 
 impl Type {
     pub(crate) fn new(type_ref: LLVMTypeRef) -> Self {
+        assert!(!type_ref.is_null());
         Type(type_ref)
     }
 
@@ -111,6 +113,40 @@ impl Type {
     pub fn const_null(&self) -> Value {
         assert_eq!(self.kind(), TypeKind::LLVMPointerTypeKind);
         unsafe { Value::new(core::LLVMConstNull(self.0)) }
+    }
+
+    pub(crate) fn struct_type_in_context(
+        context: &Context,
+        elements: &[Type],
+        packed: bool,
+    ) -> Type {
+        let mut elements = elements.iter().map(|x| x.0).collect::<Vec<_>>();
+        unsafe {
+            Type::new(core::LLVMStructTypeInContext(
+                context.0,
+                elements.as_mut_ptr(),
+                elements.len() as u32,
+                packed as i32,
+            ))
+        }
+    }
+
+    /// Set the contents of a structure type.
+    ///
+    /// # Panics
+    /// Panics if self is not a structure type.
+    pub fn struct_set_body(&self, elements: &[Type], packed: bool) -> Type {
+        assert_eq!(self.kind(), TypeKind::LLVMStructTypeKind);
+        let mut elements = elements.iter().map(|x| x.0).collect::<Vec<_>>();
+        unsafe {
+            core::LLVMStructSetBody(
+                self.0,
+                elements.as_mut_ptr(),
+                elements.len() as u32,
+                packed as i32,
+            );
+        }
+        *self
     }
 
     /// Obtain a function type consisting of a specified signature.

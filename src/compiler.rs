@@ -58,7 +58,8 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         let pptr = self.builder.build_pointer_cast(
             ptr,
             self.context
-                .int_type(8)
+                .get_named_struct("DataType")
+                .unwrap()
                 .pointer_type(AddressSpace::Generic)
                 .pointer_type(AddressSpace::Generic),
             "pptr",
@@ -90,7 +91,13 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             unsafe { function.delete_function() };
             err
         })?;
-        self.builder.build_ret(body);
+        let any_ptr = self
+            .context
+            .get_named_struct("Any")
+            .unwrap()
+            .pointer_type(AddressSpace::Generic);
+        let result = self.builder.build_pointer_cast(body, any_ptr, "result");
+        self.builder.build_ret(result);
 
         if function.verify_function() {
             self.fpm.run(function);
@@ -114,7 +121,11 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     ) -> Result<(Value, Env<'e, EnvValue>), Box<dyn Error>> {
         let name = self.interner.resolve(proto.name).unwrap();
 
-        let ptr_t = self.context.int_type(8).pointer_type(AddressSpace::Generic);
+        let ptr_t = self
+            .context
+            .get_named_struct("Any")
+            .unwrap()
+            .pointer_type(AddressSpace::Generic);
         let ret_type = ptr_t;
         let param_type = ptr_t;
         let params_types = std::iter::repeat(param_type)
@@ -141,7 +152,15 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 Some(EnvValue::Local(value)) => *value,
                 Some(EnvValue::Global(name)) => {
                     let global = self.module.get_global(name).unwrap();
-                    self.builder.build_load(global, name)
+                    let value = self.builder.build_load(global, name);
+                    self.builder.build_pointer_cast(
+                        value,
+                        self.context
+                            .get_named_struct("Any")
+                            .unwrap()
+                            .pointer_type(AddressSpace::Generic),
+                        &(name.to_string() + "_any"),
+                    )
                 }
                 Some(EnvValue::Function(name)) => self.module.get_function(name).unwrap(),
                 None => {

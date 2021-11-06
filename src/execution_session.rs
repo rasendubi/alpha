@@ -5,7 +5,7 @@ use llvm::module::Module;
 use llvm::orc::lljit::{LLJITBuilder, ResourceTracker, LLJIT};
 use llvm::orc::thread_safe::ThreadSafeContext;
 use llvm::pass_manager::FunctionPassManager;
-use llvm::types::AddressSpace;
+use llvm::types::{AddressSpace, Type};
 use llvm::values::Value;
 
 use crate::compiler::Compiler;
@@ -39,49 +39,52 @@ unsafe extern "C" fn type_of(x: *const *const u8) -> *const u8 {
 // TODO: generating all primitive operations as IR from Rust code might be easier to implement (less
 // duplication).
 const STDLIB_LL: &str = r#"
-  @f64 = external global i8*
-  @i64 = external global i8*
+  %Any = type opaque
+  %DataType = type opaque
 
-  declare i8* @gc_allocate(i64 %0)
+  @f64 = external global %DataType*
+  @i64 = external global %DataType*
 
-  define i8* @gc_allocate_with_typetag(i64 %size, i8* %type) {
-    %result_any = call i8* @gc_allocate(i64 8)
-    %result_typetag = bitcast i8* %result_any to i8**
-    %typetag = getelementptr i8*, i8** %result_typetag, i64 -1
-    store i8* %type, i8** %typetag
-    ret i8* %result_any
+  declare %Any* @gc_allocate(i64 %0)
+
+  define %Any* @gc_allocate_with_typetag(i64 %size, %DataType* %type) {
+    %result_any = call %Any* @gc_allocate(i64 8)
+    %result_cells = bitcast %Any* %result_any to %DataType**
+    %typetag = getelementptr %DataType*, %DataType** %result_cells, i64 -1
+    store %DataType* %type, %DataType** %typetag
+    ret %Any* %result_any
   }
 
-  define i8* @f64_mul(i8* %a, i8* %b) {
+  define %Any* @f64_mul(%Any* %a, %Any* %b) {
   entry:
-    %f64_t = load i8*, i8** @f64
-    %result_any = call i8* @gc_allocate_with_typetag(i64 8, i8* %f64_t)
+    %f64_t = load %DataType*, %DataType** @f64
+    %result_any = call %Any* @gc_allocate_with_typetag(i64 8, %DataType* %f64_t)
 
-    %a_float_ptr = bitcast i8* %a to double*
+    %a_float_ptr = bitcast %Any* %a to double*
     %a_value = load double, double* %a_float_ptr
-    %b_float_ptr = bitcast i8* %b to double*
+    %b_float_ptr = bitcast %Any* %b to double*
     %b_value = load double, double* %b_float_ptr
 
     %result = fmul double %a_value, %b_value
-    %result_ptr = bitcast i8* %result_any to double*
+    %result_ptr = bitcast %Any* %result_any to double*
     store double %result, double* %result_ptr
-    ret i8* %result_any
+    ret %Any* %result_any
   }
 
-  define i8* @i64_mul(i8* %a, i8* %b) {
+  define %Any* @i64_mul(%Any* %a, %Any* %b) {
   entry:
-    %i64_t = load i8*, i8** @i64
-    %result_any = call i8* @gc_allocate_with_typetag(i64 8, i8* %i64_t)
+    %i64_t = load %DataType*, %DataType** @i64
+    %result_any = call %Any* @gc_allocate_with_typetag(i64 8, %DataType* %i64_t)
 
-    %a_float_ptr = bitcast i8* %a to i64*
-    %a_value = load i64, i64* %a_float_ptr
-    %b_float_ptr = bitcast i8* %b to i64*
-    %b_value = load i64, i64* %b_float_ptr
+    %a_int_ptr = bitcast %Any* %a to i64*
+    %a_value = load i64, i64* %a_int_ptr
+    %b_int_ptr = bitcast %Any* %b to i64*
+    %b_value = load i64, i64* %b_int_ptr
 
     %result = mul i64 %a_value, %b_value
-    %result_ptr = bitcast i8* %result_any to i64*
+    %result_ptr = bitcast %Any* %result_any to i64*
     store i64 %result, i64* %result_ptr
-    ret i8* %result_any
+    ret %Any* %result_any
   }
 "#;
 
@@ -159,11 +162,11 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     fn build_stdlib(&mut self) -> Result<(), Box<dyn Error>> {
-        let ptr_t = self
-            .context
-            .context()
-            .int_type(8)
-            .pointer_type(AddressSpace::Generic);
+        let any = self.context.context().create_named_struct_type("Any"); // opaque
+        let datatype = self.context.context().create_named_struct_type("DataType"); // to be defined
+        let datatype_ptr_t = datatype.pointer_type(AddressSpace::Generic);
+
+        let ptr_t = any.pointer_type(AddressSpace::Generic);
         let i64_t = self.context.context().int_type(64);
 
         self.globals
@@ -171,24 +174,24 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.jit
             .define_symbol("gc_allocate", gc_allocate as usize)?;
 
-        let type_type = unsafe {
+        let datatype_type = unsafe {
             // Type is self-referencial:
-            // typeof(Type) == Type
+            // typeof(DataType) == DataType
             let type_type = gc_allocate(0);
             let typetag = type_type.sub(8) as *mut *const _;
             *typetag = type_type;
             type_type
         };
         self.globals
-            .add_global("Type", ptr_t)
+            .add_global("DataType", datatype_ptr_t)
             .global_set_initializer(
                 i64_t
-                    .const_int(type_type as u64, false)
-                    .const_int_to_pointer(ptr_t),
+                    .const_int(datatype_type as u64, false)
+                    .const_int_to_pointer(datatype_ptr_t),
             );
         self.global_env.insert(
-            self.interner.intern("Type"),
-            EnvValue::Global("Type".to_string()),
+            self.interner.intern("DataType"),
+            EnvValue::Global("DataType".to_string()),
         );
 
         let type_of_ = self
@@ -201,10 +204,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         );
 
         // Add a copy of the globals module to jit, so globals with initializers are defined.
-        let stdlib = self.globals.clone();
-        stdlib.dump_to_stderr();
-        let stdlib = self.context.create_module(stdlib);
-        self.jit.add_module(stdlib)?;
+        self.load_module(self.globals.clone())?;
 
         // poor man's standard library
         self.run_line(
@@ -215,17 +215,15 @@ impl<'ctx> ExecutionSession<'ctx> {
         )?;
 
         // stdlib.ll defines primitive operations
-        let stdlib_ll = self
-            .context
-            .context()
-            .parse_ir_module("stdlib.ll", STDLIB_LL)?;
-        self.save_global_declarations(&stdlib_ll);
-        self.save_function_declarations(&stdlib_ll);
-        self.load_module(stdlib_ll)?;
+        self.load_ir_module("stdlib.ll", STDLIB_LL)?;
+        self.globals
+            .add_function("f64_mul", ptr_t.function_type(&[ptr_t, ptr_t], false));
         self.global_env.insert(
             self.interner.intern("f64_mul"),
             EnvValue::Function("f64_mul".to_string()),
         );
+        self.globals
+            .add_function("i64_mul", ptr_t.function_type(&[ptr_t, ptr_t], false));
         self.global_env.insert(
             self.interner.intern("i64_mul"),
             EnvValue::Function("i64_mul".to_string()),
@@ -253,7 +251,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
     // Build a global type binding and initialize it. This does not execute any code inside the JIT.
     fn build_type(&mut self, type_: &exp::TypeDefinition) -> Result<(), Box<dyn Error>> {
-        let type_t = self.jit.lookup::<*const *const u8>("Type")?;
+        let type_t = self.jit.lookup::<*const *const u8>("DataType")?;
         let type_ptr = unsafe { gc_allocate(0) as *mut *const u8 };
         unsafe {
             // TODO: set_typetag() function
@@ -267,7 +265,8 @@ impl<'ctx> ExecutionSession<'ctx> {
         let ptr_t = self
             .context
             .context()
-            .int_type(8)
+            .get_named_struct("DataType")
+            .unwrap()
             .pointer_type(AddressSpace::Generic);
         let i64_t = self.context.context().int_type(64);
         let type_global = module.add_global(name, ptr_t);
@@ -281,8 +280,71 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.global_env
             .insert(type_.name, EnvValue::Global(name.to_string()));
 
+        let t = self.build_type_specifier(type_)?;
+        eprint!("defined type: ");
+        t.dump_to_stderr();
+        eprintln!();
+
         self.load_module(module)?;
 
+        Ok(())
+    }
+
+    fn build_type_specifier(
+        &mut self,
+        type_: &exp::TypeDefinition,
+    ) -> Result<Type, Box<dyn Error>> {
+        let name = self.interner.resolve(type_.name).unwrap();
+        let t = match &type_.specifier {
+            exp::TypeSpecifier::Integer(size) => {
+                let i = self.context.context().int_type(*size as u32);
+                let t = self
+                    .context
+                    .context()
+                    .create_named_struct_type(name)
+                    .struct_set_body(&[i], false);
+                t
+            }
+            exp::TypeSpecifier::Float(size) => {
+                let i = self.context.context().float_type(*size as u32);
+                let t = self
+                    .context
+                    .context()
+                    .create_named_struct_type(name)
+                    .struct_set_body(&[i], false);
+                t
+            }
+            exp::TypeSpecifier::Struct(fields) => {
+                let any = self
+                    .context
+                    .context()
+                    .get_named_struct("Any")
+                    .unwrap()
+                    .pointer_type(AddressSpace::Generic);
+                let v = fields.iter().map(|_| any).collect::<Vec<_>>();
+                let t = self
+                    .context
+                    .context()
+                    .create_named_struct_type(name)
+                    .struct_set_body(&v, false);
+                t
+            }
+        };
+
+        Ok(t)
+    }
+
+    /// Load IR module using a standalone context. This way, the module can (re)define any types or
+    /// functions without clogging the global context.
+    ///
+    /// The side effect is that global functions/types defined in the IR module must be explicitly
+    /// added to the default context for them to be available.
+    fn load_ir_module(&mut self, name: &str, ir: &str) -> Result<(), Box<dyn Error>> {
+        let context = ThreadSafeContext::new();
+        let module = context.context().parse_ir_module(name, ir)?;
+        module.dump_to_stderr();
+        let module = context.create_module(module);
+        self.jit.add_module(module)?;
         Ok(())
     }
 

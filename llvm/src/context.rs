@@ -105,6 +105,21 @@ impl Context {
         unsafe { Type::new(core::LLVMIntTypeInContext(self.0, num_bits)) }
     }
 
+    pub fn float_type(&self, num_bits: u32) -> Type {
+        match num_bits {
+            32 => self.f32_type(),
+            64 => self.f64_type(),
+            _ => panic!(
+                "Context.float_type called with unsupported size {}",
+                num_bits
+            ),
+        }
+    }
+
+    pub fn f32_type(&self) -> Type {
+        unsafe { Type::new(core::LLVMFloatTypeInContext(self.0)) }
+    }
+
     pub fn f64_type(&self) -> Type {
         unsafe { Type::new(core::LLVMDoubleTypeInContext(self.0)) }
     }
@@ -120,6 +135,50 @@ impl Context {
     /// ```
     pub fn void_type(&self) -> Type {
         unsafe { Type::new(core::LLVMVoidTypeInContext(self.0)) }
+    }
+
+    /// Get an anonymous structure type.
+    ///
+    /// # Examples
+    /// ```
+    /// # use llvm::context::Context;
+    /// # use llvm::types::*;
+    /// # let context = Context::new();
+    /// let st = context.struct_type(&[context.int_type(64)], false);
+    /// assert_eq!(st.kind(), TypeKind::LLVMStructTypeKind);
+    /// ```
+    pub fn struct_type(&self, elements: &[Type], packed: bool) -> Type {
+        Type::struct_type_in_context(self, elements, packed)
+    }
+
+    /// Create an empty structure [`Type`] in a context having a specified name.
+    ///
+    /// Structure body can be set with [`Type.struct_set_body()`].
+    ///
+    /// # Examples
+    /// ```
+    /// # use llvm::context::Context;
+    /// # use llvm::types::*;
+    /// # let context = Context::new();
+    /// let st = context.create_named_struct_type("my_struct");
+    /// st.struct_set_body(&[context.int_type(64)], false);
+    /// assert_eq!(st.kind(), TypeKind::LLVMStructTypeKind);
+    /// ```
+    pub fn create_named_struct_type(&self, name: &str) -> Type {
+        let name = CString::new(name).unwrap();
+        unsafe { Type::new(core::LLVMStructCreateNamed(self.0, name.as_ptr())) }
+    }
+
+    pub fn get_named_struct(&self, name: &str) -> Option<Type> {
+        let name = CString::new(name).unwrap();
+        unsafe {
+            let s = core::LLVMGetTypeByName2(self.0, name.as_ptr());
+            if s.is_null() {
+                None
+            } else {
+                Some(Type::new(s))
+            }
+        }
     }
 
     /// Append a basic block to the end of a function.
