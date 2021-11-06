@@ -84,6 +84,8 @@ impl<'a> Parser<'a> {
             { Float            => prefix: parse_float                          },
             { Symbol("fn")     => prefix: parse_fn                             },
             { Symbol("type")   => prefix: parse_type                           },
+            { Symbol("{")      => prefix: parse_block                          },
+
             { Symbol("=")      =>                      infix: 10, parse_binary },
 
             { Symbol("==")     =>                      infix: 40, parse_binary },
@@ -196,6 +198,27 @@ fn parse_group<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
         _ => bail!("expected )"),
     }
     Ok(expr)
+}
+
+fn parse_block<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+    p.lexer.next(); // {
+    let mut v = Vec::new();
+    v.push(SExp::Symbol("block"));
+
+    while p.lexer.peek().is_some() && p.lexer.peek() != Some(&Token::Symbol("}")) {
+        v.push(p.parse_expr()?);
+
+        let peek = p.lexer.peek();
+        if peek == Some(&Token::Symbol(",")) || peek == Some(&Token::Symbol(";")) {
+            p.lexer.next();
+        }
+    }
+    if p.lexer.peek().is_none() {
+        bail!("} is expected")
+    }
+    p.lexer.next(); // }
+
+    Ok(SExp::List(v))
 }
 
 fn parse_fallback<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {

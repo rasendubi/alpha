@@ -243,7 +243,9 @@ impl<'ctx> ExecutionSession<'ctx> {
     pub fn run_line(&mut self, line: &str) -> Result<(), Box<dyn Error>> {
         let mut parser = Parser::new(line);
         while parser.has_input() {
-            self.run_sexp(&parser.parse()?)?;
+            let sexp = parser.parse()?;
+            println!("sexp: {}", sexp);
+            self.run_sexp(&sexp)?;
         }
 
         Ok(())
@@ -303,7 +305,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
     fn run_sexp(&mut self, sexp: &SExp) -> Result<(), Box<dyn Error>> {
         let exp = lower_sexp(&sexp, &mut self.interner)?;
-        println!("\nlowered: {:?}", &exp);
+        println!("\nexp: {:?}\n", &exp);
 
         if let Exp::Type(t) = &exp {
             return self.build_type(t);

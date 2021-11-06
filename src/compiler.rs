@@ -7,7 +7,7 @@ use llvm::pass_manager::FunctionPassManager;
 use llvm::types::AddressSpace;
 use llvm::values::Value;
 
-use simple_error::bail;
+use simple_error::{bail, simple_error};
 
 use crate::env::Env;
 use crate::symbol::SymbolInterner;
@@ -193,6 +193,14 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 }
 
                 self.builder.build_call(f, &args, "tmp")
+            }
+            Exp::Block(block) => {
+                let mut result = None;
+                for e in block {
+                    result = Some(self.compile_exp(env, e)?);
+                }
+
+                result.ok_or_else(|| simple_error!("empty blocks are not supported yet"))?
             }
             Exp::Function(_) => {
                 bail!("function definition is not expected here")

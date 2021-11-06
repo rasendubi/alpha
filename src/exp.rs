@@ -17,6 +17,7 @@ pub enum Exp {
     Symbol(Symbol),
     Integer(i64),
     Float(f64),
+    Block(Vec<Exp>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -75,8 +76,15 @@ pub fn lower_sexp(sexp: &SExp, interner: &mut SymbolInterner) -> Result<Exp, Box
                     }
                     Exp::Call(Call{ fun, args })
                 }
+                "block" => {
+                    let mut block = Vec::new();
+                    for sexp in &v[1..] {
+                        block.push(lower_sexp(sexp, interner)?);
+                    }
+                    Exp::Block(block)
+                }
                 x => {
-                    panic!("Invalid list head: {}", x);
+                    panic!("unknown sexp list head: {}", x);
                 }
             }
         }

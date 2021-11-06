@@ -8,7 +8,9 @@ pub enum Token<'a> {
     #[regex(r"-?[0-9]+\.[0-9]+", slice)]
     Float(&'a str),
 
-    #[regex(r"[(){}\[\],:.]", slice)] // single-char
+    // TODO: separate (){}[],;. into a separate token class so that they are not parsed as symbol
+    // lookup. : is fine as symbol?
+    #[regex(r"[(){}\[\],;:.]", slice)] // single-char
     #[regex(r"[\pL_][\pL\pN_]*", slice)]
     #[regex(r"[\pS!%&*/?@-]+", slice)]
     Symbol(&'a str),
