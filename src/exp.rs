@@ -31,11 +31,11 @@ pub struct TypeDefinition {
 pub enum TypeSpecifier {
     Integer(usize),
     Float(usize),
-    Struct(Vec<StructField>),
+    Struct(Vec<StructFieldSpecifier>),
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct StructField {
+pub struct StructFieldSpecifier {
     pub name: Symbol,
     pub typ: Option<Symbol>,
 }
@@ -165,7 +165,7 @@ fn lower_type_specifier(exp: &Exp, interner: &mut SymbolInterner) -> Result<Type
                     e => bail!("unable to parse struct field: {:?}", e),
                 };
 
-                fields.push(StructField{ name, typ });
+                fields.push(StructFieldSpecifier{ name, typ });
             }
 
             TypeSpecifier::Struct(fields)

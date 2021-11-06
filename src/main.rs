@@ -7,6 +7,7 @@ mod lexer;
 mod parser;
 mod sexp;
 mod symbol;
+mod types;
 
 use crate::execution_session::ExecutionSession;
 

@@ -16,6 +16,7 @@ use crate::gc::Gc;
 use crate::parser::Parser;
 use crate::sexp::SExp;
 use crate::symbol::SymbolInterner;
+use crate::types::{AlphaType, AlphaTypeDef};
 
 thread_local! {
     static GC: RefCell<Gc> = RefCell::new(unsafe { Gc::new_uninit() });
@@ -101,6 +102,7 @@ pub struct ExecutionSession<'ctx> {
     jit: LLJIT,
     interner: SymbolInterner,
     global_env: Env<'ctx, EnvValue>,
+    types: Env<'ctx, AlphaType>,
     // Context should be the last field, so that other fields (globals, jit) are disposed _before_
     // module is disposed.
     context: ThreadSafeContext,
@@ -123,6 +125,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         let interner = SymbolInterner::new();
         let global_env = Env::new(None);
+        let types = Env::new(None);
 
         let mut es = ExecutionSession {
             context,
@@ -130,6 +133,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             global_env,
             jit,
             globals,
+            types,
         };
 
         es.build_stdlib().unwrap();
@@ -166,6 +170,38 @@ impl<'ctx> ExecutionSession<'ctx> {
         let datatype = self.context.context().create_named_struct_type("DataType"); // to be defined
         let datatype_ptr_t = datatype.pointer_type(AddressSpace::Generic);
 
+        self.types.insert(
+            self.interner.intern("Any"),
+            AlphaType {
+                name: self.interner.intern("Any"),
+                typedef: AlphaTypeDef::Abstract,
+            },
+        );
+        self.types.insert(
+            self.interner.intern("DataType"),
+            AlphaType {
+                name: self.interner.intern("DataType"),
+                typedef: AlphaTypeDef::Struct {
+                    fields: vec![
+                        (
+                            self.interner.intern("size"),
+                            AlphaType {
+                                name: self.interner.intern("i64"),
+                                typedef: AlphaTypeDef::Int(64),
+                            },
+                        ),
+                        (
+                            self.interner.intern("n_ptrs"),
+                            AlphaType {
+                                name: self.interner.intern("i64"),
+                                typedef: AlphaTypeDef::Int(64),
+                            },
+                        ),
+                    ],
+                },
+            },
+        );
+
         let ptr_t = any.pointer_type(AddressSpace::Generic);
         let i64_t = self.context.context().int_type(64);
 
@@ -174,19 +210,22 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.jit
             .define_symbol("gc_allocate", gc_allocate as usize)?;
 
-        let datatype_type = unsafe {
+        // assumed: type DataType = { size: i64, n_ptrs: i64 }
+        // so that: let DataType = DataType { size: 16, n_ptrs: 16 }
+        let datatype = unsafe {
+            let datatype = gc_allocate(16) as *mut u64;
             // Type is self-referencial:
             // typeof(DataType) == DataType
-            let type_type = gc_allocate(0);
-            let typetag = type_type.sub(8) as *mut *const _;
-            *typetag = type_type;
-            type_type
+            Self::set_typetag(datatype, datatype as *const ());
+            *datatype.add(0) = 16;
+            *datatype.add(1) = 0;
+            datatype
         };
         self.globals
             .add_global("DataType", datatype_ptr_t)
             .global_set_initializer(
                 i64_t
-                    .const_int(datatype_type as u64, false)
+                    .const_int(datatype as u64, false)
                     .const_int_to_pointer(datatype_ptr_t),
             );
         self.global_env.insert(
@@ -249,15 +288,49 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(())
     }
 
+    unsafe fn set_typetag<T>(ptr: *mut T, typetag: *const ()) {
+        let typetag_ptr = (ptr as *mut u64).sub(1) as *mut *const ();
+        *typetag_ptr = typetag;
+    }
+
     // Build a global type binding and initialize it. This does not execute any code inside the JIT.
     fn build_type(&mut self, type_: &exp::TypeDefinition) -> Result<(), Box<dyn Error>> {
-        let type_t = self.jit.lookup::<*const *const u8>("DataType")?;
-        let type_ptr = unsafe { gc_allocate(0) as *mut *const u8 };
-        unsafe {
-            // TODO: set_typetag() function
-            let typetag_ptr = type_ptr.sub(1);
-            *typetag_ptr = *type_t;
-        }
+        let alpha_type = AlphaType::from_exp(type_, &self.types)?;
+        println!("type lowered to {:?}", alpha_type);
+
+        let type_size = alpha_type
+            .typedef
+            .size()
+            .expect("unsized types are not supported yet");
+        let n_ptrs = alpha_type
+            .typedef
+            .n_ptrs()
+            .expect("abstract types are not supported yet");
+
+        // assumed: type DataType = { size: i64, n_ptrs: i64 }
+        // so that: let DataType = DataType { size: 16, n_ptrs: 0 }
+        let datatype_t = self.jit.lookup::<*const *const ()>("DataType")?;
+        let type_ptr = unsafe {
+            let type_ptr = gc_allocate(8) as *mut u64;
+            Self::set_typetag(type_ptr, *datatype_t);
+            *type_ptr.add(0) = type_size as u64;
+            *type_ptr.add(1) = n_ptrs as u64;
+
+            type_ptr
+        };
+
+        let t = self.build_type_specifier(&alpha_type)?;
+        eprint!("defined type: ");
+        t.dump_to_stderr();
+        eprint!(
+            " size={}, n_ptrs={}, is_inlinable={}, has_ptrs={}, is_ptr={}",
+            type_size,
+            n_ptrs,
+            alpha_type.typedef.is_inlinable(),
+            alpha_type.typedef.has_ptrs(),
+            alpha_type.typedef.is_ptr(),
+        );
+        eprintln!();
 
         let name = self.interner.resolve(type_.name).unwrap();
         let module = self.context.context().create_module(name);
@@ -279,24 +352,18 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.globals.add_global(name, ptr_t); // without initializer here
         self.global_env
             .insert(type_.name, EnvValue::Global(name.to_string()));
-
-        let t = self.build_type_specifier(type_)?;
-        eprint!("defined type: ");
-        t.dump_to_stderr();
-        eprintln!();
+        self.types.insert(alpha_type.name, alpha_type);
 
         self.load_module(module)?;
 
         Ok(())
     }
 
-    fn build_type_specifier(
-        &mut self,
-        type_: &exp::TypeDefinition,
-    ) -> Result<Type, Box<dyn Error>> {
+    fn build_type_specifier(&mut self, type_: &AlphaType) -> Result<Type, Box<dyn Error>> {
         let name = self.interner.resolve(type_.name).unwrap();
-        let t = match &type_.specifier {
-            exp::TypeSpecifier::Integer(size) => {
+        let t = match &type_.typedef {
+            AlphaTypeDef::Abstract => panic!("build_type_specifier is called for Abstract type"),
+            AlphaTypeDef::Int(size) => {
                 let i = self.context.context().int_type(*size as u32);
                 let t = self
                     .context
@@ -305,7 +372,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                     .struct_set_body(&[i], false);
                 t
             }
-            exp::TypeSpecifier::Float(size) => {
+            AlphaTypeDef::Float(size) => {
                 let i = self.context.context().float_type(*size as u32);
                 let t = self
                     .context
@@ -314,14 +381,25 @@ impl<'ctx> ExecutionSession<'ctx> {
                     .struct_set_body(&[i], false);
                 t
             }
-            exp::TypeSpecifier::Struct(fields) => {
+            AlphaTypeDef::Struct { fields } => {
                 let any = self
                     .context
                     .context()
                     .get_named_struct("Any")
                     .unwrap()
                     .pointer_type(AddressSpace::Generic);
-                let v = fields.iter().map(|_| any).collect::<Vec<_>>();
+                let v = fields
+                    .iter()
+                    .map(|(_name, typ)| {
+                        let name = self.interner.resolve(typ.name).unwrap();
+                        let field_t = self.context.context().get_named_struct(name).unwrap();
+                        if typ.typedef.is_inlinable() {
+                            field_t
+                        } else {
+                            field_t.pointer_type(AddressSpace::Generic)
+                        }
+                    })
+                    .collect::<Vec<_>>();
                 let t = self
                     .context
                     .context()
