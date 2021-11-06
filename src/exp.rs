@@ -31,6 +31,13 @@ pub struct TypeDefinition {
 pub enum TypeSpecifier {
     Integer(usize),
     Float(usize),
+    Struct(Vec<StructField>),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct StructField {
+    pub name: Symbol,
+    pub typ: Option<Symbol>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -135,6 +142,33 @@ fn lower_type_specifier(exp: &Exp, interner: &mut SymbolInterner) -> Result<Type
                 }
                 _ => bail!("unknown type specifier")
             }
+        }
+        Exp::Block(block) => {
+            let mut fields = Vec::new();
+            for f in block {
+                let (name, typ) = match f {
+                    Exp::Symbol(s) => (*s, None),
+
+                    Exp::Call(Call{ fun, args }) if &**fun == &Exp::Symbol(interner.intern(":")) => {
+                        let name = match args.get(0) {
+                            Some(Exp::Symbol(s)) => s,
+                            e => bail!("parameter name must be a symbol, {:?} given", e),
+                        };
+                        let typ = match args.get(1) {
+                            Some(Exp::Symbol(s)) => s,
+                            e => bail!("parameter type must be a symbol, {:?} given", e),
+                        };
+
+                        (*name, Some(*typ))
+                    }
+
+                    e => bail!("unable to parse struct field: {:?}", e),
+                };
+
+                fields.push(StructField{ name, typ });
+            }
+
+            TypeSpecifier::Struct(fields)
         }
         e => bail!("type specifier should be a call, given: {:?}", e)
     };
