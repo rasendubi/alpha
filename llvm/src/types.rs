@@ -185,7 +185,7 @@ impl Type {
     /// ```
     ///
     /// # Safety
-    /// Panics if [`kind()`] is not [TypeKind::LLVMFunctionTypeKind].
+    /// Panics if [`Type::kind()`] is not [TypeKind::LLVMFunctionTypeKind].
     pub fn return_type(&self) -> Type {
         assert_eq!(self.kind(), TypeKind::LLVMFunctionTypeKind);
         unsafe { Type::new(core::LLVMGetReturnType(self.0)) }

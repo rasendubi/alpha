@@ -26,6 +26,24 @@ pub struct Compiler<'a, 'ctx> {
 }
 
 impl<'a, 'ctx> Compiler<'a, 'ctx> {
+    /// # Pre-defined symbols
+    ///
+    /// The compiler assumes the following pre-defined symbols already exist in the module.
+    /// ```norust
+    /// %Any = type opaque
+    /// %DataType = type opaque
+    ///
+    /// @i64 = external global %DataType*
+    /// @f64 = external global %DataType*
+    ///
+    /// declare %Any* @gc_allocate(i64 %size)
+    ///
+    /// declare %Any* @dispatch(%Any* %fun, i64 %n_args, %Any** %args)
+    /// ```
+    ///
+    /// The following symbols should be resolve-able via env:
+    /// - `i64` — type for integer literals
+    /// - `f64` — type for floating point literals
     pub fn compile(
         interner: &'a mut SymbolInterner,
         context: &'ctx Context,
@@ -252,40 +270,13 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             }
             Exp::Call(call) => {
                 let f = self.compile_exp(env, &call.fun)?;
-                // let mut args = Vec::new();
-                // for arg in &call.args {
-                //     args.push(self.compile_exp(env, arg)?);
-                // }
 
-                let any_ptr_t = self
-                    .context
-                    .get_named_struct("Any")
-                    .unwrap()
-                    .pointer_type(AddressSpace::Generic);
-                let i64_t = self.context.int_type(64);
-
-                let size = i64_t.const_int(call.args.len() as u64, false);
-                let args = self.builder.build_array_alloca(any_ptr_t, size, "args");
-
-                for (i, arg) in call.args.iter().enumerate() {
-                    let arg = self.compile_exp(env, arg)?;
-                    let a_ptr = self.builder.build_gep(
-                        args,
-                        &[i64_t.const_int(i as u64, false)],
-                        "arg_ptr",
-                    );
-                    self.builder.build_store(a_ptr, arg);
+                let mut args = Vec::new();
+                for arg in &call.args {
+                    args.push(self.compile_exp(env, arg)?);
                 }
 
-                self.build_call(
-                    f,
-                    &[
-                        self.builder.build_pointer_cast(f, any_ptr_t, "f_ptr"),
-                        size,
-                        args,
-                    ],
-                    "tmp",
-                )?
+                self.build_call(f, &args, "tmp")?
             }
             Exp::Block(block) => {
                 let mut result = None;
@@ -308,7 +299,35 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         args: &[Value],
         name: &str,
     ) -> Result<Value, Box<dyn Error>> {
-        let result = self.builder.build_call(f, args, name);
+        let any_ptr_t = self
+            .context
+            .get_named_struct("Any")
+            .unwrap()
+            .pointer_type(AddressSpace::Generic);
+        let i64_t = self.context.int_type(64);
+
+        let size = i64_t.const_int(args.len() as u64, false);
+        let args_ptr = self.builder.build_array_alloca(any_ptr_t, size, "args");
+
+        for (i, arg) in args.iter().enumerate() {
+            let a_ptr =
+                self.builder
+                    .build_gep(args_ptr, &[i64_t.const_int(i as u64, false)], "arg_ptr");
+            self.builder.build_store(a_ptr, *arg);
+        }
+
+        let dispatch = self.module.get_function("dispatch").unwrap();
+
+        let result = self.builder.build_call(
+            dispatch,
+            &[
+                self.builder.build_pointer_cast(f, any_ptr_t, "f_ptr"),
+                size,
+                args_ptr,
+            ],
+            name,
+        );
+
         Ok(result)
     }
 }

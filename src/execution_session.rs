@@ -49,6 +49,12 @@ unsafe extern "C" fn alpha_type_of(_this: AnyPtr, _n_args: i64, args: *const Any
     type_of(x)
 }
 
+unsafe extern "C" fn dispatch(f: AnyPtr, n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let f_fn: unsafe extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr =
+        std::mem::transmute_copy(&f);
+    f_fn(f, n_args, args)
+}
+
 // TODO: generating all primitive operations as IR from Rust code might be easier to implement (less
 // duplication).
 const STDLIB_LL: &str = r#"
@@ -241,6 +247,9 @@ impl<'ctx> ExecutionSession<'ctx> {
         );
         self.jit
             .define_symbol("gc_allocate", gc_allocate as usize)?;
+
+        self.globals.add_function("dispatch", fn_t);
+        self.jit.define_symbol("dispatch", dispatch as usize)?;
 
         // assumed: type DataType = { size: i64, n_ptrs: i64 }
         // so that: let DataType = DataType { size: 16, n_ptrs: 16 }
