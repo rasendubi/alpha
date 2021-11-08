@@ -26,15 +26,27 @@ unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
     GC.with(|gc| gc.borrow_mut().allocate(size as usize))
 }
 
-unsafe extern "C" fn type_of(x: *const *const u8) -> *const u8 {
-    let result = *x.sub(1);
-    // println!(
-    //     "type_of({:#?}) = {:#?} (typetag @ {:#?})",
-    //     x,
-    //     result,
-    //     x.sub(1)
-    // );
+type AnyPtr = *const u64;
+
+unsafe fn dump_value(name: &str, value: AnyPtr) {
+    println!("{} @ {:#?}", name, value);
+    if !value.is_null() {
+        println!("  type= {:p}", type_of(value as AnyPtr));
+        println!("  f64= {:.5}", *(value as *const f64));
+        println!("  u64= {}", *(value as *const u64));
+        println!("  ptr= {:p}", *(value as *const *const ()));
+    }
+}
+
+unsafe fn type_of(x: AnyPtr) -> AnyPtr {
+    let result = *x.sub(1) as AnyPtr;
+    // println!("type_of({:p}) = {:p} (typetag @ {:p})", x, result, x.sub(1));
     result
+}
+
+unsafe extern "C" fn alpha_type_of(_this: AnyPtr, _n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let x = *args.add(0);
+    type_of(x)
 }
 
 // TODO: generating all primitive operations as IR from Rust code might be easier to implement (less
@@ -214,6 +226,14 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         let any_ptr_t = any_t.pointer_type(AddressSpace::Generic);
         let i64_t = self.context.context().int_type(64);
+        let fn_t = any_ptr_t.function_type(
+            &[
+                /* this: */ any_ptr_t,
+                /* n_args: */ i64_t,
+                /* args: */ any_ptr_t.pointer_type(AddressSpace::Generic),
+            ],
+            false,
+        );
 
         self.globals.add_function(
             "gc_allocate",
@@ -245,11 +265,8 @@ impl<'ctx> ExecutionSession<'ctx> {
             EnvValue::Global("DataType".to_string()),
         );
 
-        let type_of_ = self.globals.add_function(
-            "type_of",
-            any_ptr_t.function_type(&[any_ptr_t.into()], false),
-        );
-        self.jit.define_symbol("type_of", type_of as usize)?;
+        let type_of_ = self.globals.add_function("type_of", fn_t);
+        self.jit.define_symbol("type_of", alpha_type_of as usize)?;
         self.global_env.insert(
             self.interner.intern("type_of"),
             EnvValue::Function(type_of_.get_name().to_string()),
@@ -265,15 +282,6 @@ impl<'ctx> ExecutionSession<'ctx> {
               type f64 = float(64)
             "#,
         )?;
-
-        let fn_t = any_ptr_t.function_type(
-            &[
-                /* this: */ any_ptr_t,
-                /* n_args: */ i64_t,
-                /* args: */ any_ptr_t.pointer_type(AddressSpace::Generic),
-            ],
-            false,
-        );
 
         // stdlib.ll defines primitive operations
         self.load_ir_module("stdlib.ll", STDLIB_LL)?;
@@ -499,16 +507,12 @@ impl<'ctx> ExecutionSession<'ctx> {
             // we don't need to save it.
 
             let tracker = self.load_module_with_tracker(module)?;
-            let fun = self.jit.lookup::<extern "C" fn() -> *const ()>(&name)?;
+            let fun = self
+                .jit
+                .lookup::<extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr>(&name)?;
             unsafe {
-                let result = fun();
-                println!("result @ {:#?}", result);
-                if !result.is_null() {
-                    println!("type= {:p}", type_of(result as *const *const u8));
-                    println!("f64= {:.5}", *(result as *const f64));
-                    println!("u64= {}", *(result as *const u64));
-                    println!("ptr= {:p}", *(result as *const *const ()));
-                }
+                let result = fun(std::ptr::null(), 0, std::ptr::null());
+                dump_value("result", result);
             }
 
             // This was just an anonymous function. We can unload the module as it is no longer
