@@ -205,30 +205,29 @@ impl<'ctx> ExecutionSession<'ctx> {
                 typedef: AlphaTypeDef::Abstract,
             },
         );
-        self.types.insert(
-            self.interner.intern("DataType"),
-            AlphaType {
-                name: self.interner.intern("DataType"),
-                typedef: AlphaTypeDef::Struct {
-                    fields: vec![
-                        (
-                            self.interner.intern("size"),
-                            AlphaType {
-                                name: self.interner.intern("i64"),
-                                typedef: AlphaTypeDef::Int(64),
-                            },
-                        ),
-                        (
-                            self.interner.intern("n_ptrs"),
-                            AlphaType {
-                                name: self.interner.intern("i64"),
-                                typedef: AlphaTypeDef::Int(64),
-                            },
-                        ),
-                    ],
-                },
+        let datatype_typedef = AlphaType {
+            name: self.interner.intern("DataType"),
+            typedef: AlphaTypeDef::Struct {
+                fields: vec![
+                    (
+                        self.interner.intern("size"),
+                        AlphaType {
+                            name: self.interner.intern("i64"),
+                            typedef: AlphaTypeDef::Int(64),
+                        },
+                    ),
+                    (
+                        self.interner.intern("n_ptrs"),
+                        AlphaType {
+                            name: self.interner.intern("i64"),
+                            typedef: AlphaTypeDef::Int(64),
+                        },
+                    ),
+                ],
             },
-        );
+        };
+        self.types
+            .insert(self.interner.intern("DataType"), datatype_typedef.clone());
 
         let any_ptr_t = any_t.pointer_type(AddressSpace::Generic);
         let i64_t = self.context.context().int_type(64);
@@ -292,6 +291,12 @@ impl<'ctx> ExecutionSession<'ctx> {
             "#,
         )?;
 
+        // DataType type specifier can only be built after i64 and f64 are defined in alpha.
+        let t = self.build_type_specifier(&datatype_typedef)?;
+        eprint!("defined type: ");
+        t.dump_to_stderr();
+        eprintln!();
+
         // stdlib.ll defines primitive operations
         self.load_ir_module("stdlib.ll", STDLIB_LL)?;
         self.globals.add_function("f64_mul", fn_t);
@@ -331,8 +336,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     // Build a global type binding and initialize it. This does not execute any code inside the JIT.
-    fn build_type(&mut self, type_: &exp::TypeDefinition) -> Result<(), Box<dyn Error>> {
-        let alpha_type = AlphaType::from_exp(type_, &self.types)?;
+    fn build_type(&mut self, alpha_type: &AlphaType) -> Result<(), Box<dyn Error>> {
         println!("type lowered to {:?}", alpha_type);
 
         let type_size = alpha_type
@@ -369,7 +373,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         );
         eprintln!();
 
-        let name = self.interner.resolve(type_.name).unwrap();
+        let name = self.interner.resolve(alpha_type.name).unwrap();
         let module = self.context.context().create_module(name);
 
         let ptr_t = self
@@ -388,8 +392,8 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         self.globals.add_global(name, ptr_t); // without initializer here
         self.global_env
-            .insert(type_.name, EnvValue::Global(name.to_string()));
-        self.types.insert(alpha_type.name, alpha_type);
+            .insert(alpha_type.name, EnvValue::Global(name.to_string()));
+        self.types.insert(alpha_type.name, alpha_type.clone());
 
         self.load_module(module)?;
 
@@ -434,7 +438,8 @@ impl<'ctx> ExecutionSession<'ctx> {
                 let t = self
                     .context
                     .context()
-                    .create_named_struct_type(name)
+                    .get_named_struct(name)
+                    .unwrap_or_else(|| self.context.context().create_named_struct_type(name))
                     .struct_set_body(&v, false);
                 t
             }
@@ -479,7 +484,8 @@ impl<'ctx> ExecutionSession<'ctx> {
         println!("\nexp: {:?}\n", &exp);
 
         if let Exp::Type(t) = &exp {
-            return self.build_type(t);
+            let alpha_type = AlphaType::from_exp(t, &self.types)?;
+            return self.build_type(&alpha_type);
         }
 
         let (def, is_anonymous) = match exp {
