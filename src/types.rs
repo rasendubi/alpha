@@ -2,7 +2,7 @@ use std::error::Error;
 
 use crate::env::Env;
 use crate::exp::{TypeDefinition, TypeSpecifier};
-use crate::symbol::{Symbol, SymbolInterner};
+use crate::symbol::Symbol;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct AlphaType {

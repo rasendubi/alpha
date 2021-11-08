@@ -1,12 +1,12 @@
 use std::ffi::CString;
 
-use llvm_sys::prelude::*;
 use llvm_sys::core;
+use llvm_sys::prelude::*;
 
-use crate::context::Context;
 use crate::basic_block::BasicBlock;
-use crate::values::Value;
+use crate::context::Context;
 use crate::types::Type;
+use crate::values::Value;
 
 pub struct Builder(pub(crate) LLVMBuilderRef);
 
@@ -16,9 +16,7 @@ impl Builder {
     }
 
     pub fn new_in_context(context: &Context) -> Self {
-        unsafe {
-            Builder::new(core::LLVMCreateBuilderInContext(context.0))
-        }
+        unsafe { Builder::new(core::LLVMCreateBuilderInContext(context.0)) }
     }
 
     /// # Examples
@@ -34,48 +32,66 @@ impl Builder {
     /// builder.position_at_end(bb);
     /// ```
     pub fn position_at_end(&self, bb: BasicBlock) {
-        unsafe {
-            core::LLVMPositionBuilderAtEnd(self.0, bb.0)
-        }
+        unsafe { core::LLVMPositionBuilderAtEnd(self.0, bb.0) }
     }
 
     pub fn build_ret_void(&self) -> Value {
-        unsafe {
-            Value::new(core::LLVMBuildRetVoid(self.0))
-        }
+        unsafe { Value::new(core::LLVMBuildRetVoid(self.0)) }
     }
 
     pub fn build_ret(&self, value: Value) -> Value {
+        unsafe { Value::new(core::LLVMBuildRet(self.0, value.0)) }
+    }
+
+    pub fn build_alloca(&self, typ: Type, name: &str) -> Value {
+        let name = CString::new(name).unwrap();
+        unsafe { Value::new(core::LLVMBuildAlloca(self.0, typ.0, name.as_ptr())) }
+    }
+
+    pub fn build_array_alloca(&self, typ: Type, num_elements: Value, name: &str) -> Value {
+        let name = CString::new(name).unwrap();
         unsafe {
-            Value::new(core::LLVMBuildRet(self.0, value.0))
+            Value::new(core::LLVMBuildArrayAlloca(
+                self.0,
+                typ.0,
+                num_elements.0,
+                name.as_ptr(),
+            ))
         }
     }
 
     pub fn build_load(&self, pointer: Value, name: &str) -> Value {
         let name = CString::new(name).unwrap();
-        unsafe {
-            Value::new(core::LLVMBuildLoad(self.0, pointer.0, name.as_ptr()))
-        }
+        unsafe { Value::new(core::LLVMBuildLoad(self.0, pointer.0, name.as_ptr())) }
     }
 
     pub fn build_store(&self, ptr: Value, value: Value) -> Value {
-        unsafe {
-            Value::new(core::LLVMBuildStore(self.0, value.0, ptr.0))
-        }
+        unsafe { Value::new(core::LLVMBuildStore(self.0, value.0, ptr.0)) }
     }
 
     pub fn build_call(&self, f: Value, args: &[Value], name: &str) -> Value {
         let name = CString::new(name).unwrap();
         let args = args.iter().map(|x| x.0).collect::<Vec<_>>();
         unsafe {
-            Value::new(core::LLVMBuildCall(self.0, f.0, args.as_ptr() as *mut _, args.len() as u32, name.as_ptr()))
+            Value::new(core::LLVMBuildCall(
+                self.0,
+                f.0,
+                args.as_ptr() as *mut _,
+                args.len() as u32,
+                name.as_ptr(),
+            ))
         }
     }
 
     pub fn build_pointer_cast(&self, value: Value, dest_type: Type, name: &str) -> Value {
         let name = CString::new(name).unwrap();
         unsafe {
-            Value::new(core::LLVMBuildPointerCast(self.0, value.0, dest_type.0, name.as_ptr()))
+            Value::new(core::LLVMBuildPointerCast(
+                self.0,
+                value.0,
+                dest_type.0,
+                name.as_ptr(),
+            ))
         }
     }
 
@@ -88,7 +104,8 @@ impl Builder {
                 ptr.0,
                 indices.as_ptr() as *mut _,
                 indices.len() as u32,
-                name.as_ptr()))
+                name.as_ptr(),
+            ))
         }
     }
 }

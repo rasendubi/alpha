@@ -55,14 +55,17 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     }
 
     fn build_set_typetag(&mut self, ptr: Value, tag: Value) {
+        let datatype_ptr_t = self
+            .context
+            .get_named_struct("DataType")
+            .unwrap()
+            .pointer_type(AddressSpace::Generic);
+        let tag = self.builder.build_pointer_cast(tag, datatype_ptr_t, "tag");
+
         let pptr = self.builder.build_pointer_cast(
             ptr,
-            self.context
-                .get_named_struct("DataType")
-                .unwrap()
-                .pointer_type(AddressSpace::Generic)
-                .pointer_type(AddressSpace::Generic),
-            "pptr",
+            datatype_ptr_t.pointer_type(AddressSpace::Generic),
+            "as_datatype_ptr",
         );
         let typetag_ptr = self.builder.build_gep(
             pptr,
@@ -76,18 +79,19 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     }
 
     fn compile_fn(&mut self, f: &exp::Function) -> Result<Value, Box<dyn Error>> {
-        let (function, mut env) = self.compile_prototype(self.global_env, &f.prototype)?;
+        let function = self.compile_prototype(&f.prototype)?;
 
-        if f.body.is_none() {
-            return Ok(function);
-        }
-
-        let body_exp = f.body.as_ref().unwrap();
+        let body_exp = match f.body.as_ref() {
+            None => return Ok(function),
+            Some(body) => body,
+        };
 
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
 
-        let body = self.compile_exp(&mut env, &body_exp).map_err(|err| {
+        let env = self.build_fn_prologue(self.global_env, &f.prototype, function)?;
+
+        let body = self.compile_exp(&env, &body_exp).map_err(|err| {
             unsafe { function.delete_function() };
             err
         })?;
@@ -116,9 +120,8 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
     fn compile_prototype<'e>(
         &mut self,
-        env: &'e Env<'e, EnvValue>,
         proto: &exp::FunctionPrototype,
-    ) -> Result<(Value, Env<'e, EnvValue>), Box<dyn Error>> {
+    ) -> Result<Value, Box<dyn Error>> {
         let name = self.interner.resolve(proto.name).unwrap();
 
         let ptr_t = self
@@ -126,26 +129,69 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             .get_named_struct("Any")
             .unwrap()
             .pointer_type(AddressSpace::Generic);
+        let i64_t = self.context.int_type(64);
+
         let ret_type = ptr_t;
-        let param_type = ptr_t;
-        let params_types = std::iter::repeat(param_type)
-            .take(proto.params.len())
-            .collect::<Vec<_>>();
+        let params_types = vec![
+            /* self: */ ptr_t,
+            /* n_args: */ i64_t,
+            /* args: */ ptr_t.pointer_type(AddressSpace::Generic),
+        ];
         let fn_type = ret_type.function_type(&params_types, false);
+
         let fn_val = self.module.add_function(&name, fn_type);
 
-        let mut env = Env::new(Some(env));
-        for (i, param) in fn_val.get_param_iter().enumerate() {
-            let param_symbol = proto.params[i].name;
-            let param_name = self.interner.resolve(param_symbol).unwrap();
-            param.set_name(&param_name);
-            env.insert(param_symbol, EnvValue::Local(param));
-        }
-
-        Ok((fn_val, env))
+        Ok(fn_val)
     }
 
-    fn compile_exp(&mut self, env: &mut Env<EnvValue>, exp: &Exp) -> Result<Value, Box<dyn Error>> {
+    fn build_fn_prologue<'e>(
+        &mut self,
+        env: &'e Env<'e, EnvValue>,
+        proto: &exp::FunctionPrototype,
+        fn_val: Value,
+    ) -> Result<Env<'e, EnvValue>, Box<dyn Error>> {
+        let mut params = fn_val.get_param_iter();
+        let this = params.next().unwrap();
+        let n_args = params.next().unwrap();
+        let args = params.next().unwrap();
+
+        this.set_name("this");
+        n_args.set_name("n_args");
+        args.set_name("args");
+
+        let any_ptr_t = self
+            .context
+            .get_named_struct("Any")
+            .unwrap()
+            .pointer_type(AddressSpace::Generic);
+        let i64_t = self.context.int_type(64);
+
+        let args = self.builder.build_pointer_cast(
+            args,
+            i64_t.pointer_type(AddressSpace::Generic),
+            "args_cells",
+        );
+
+        let mut env = Env::new(Some(env));
+        for (i, param) in proto.params.iter().enumerate() {
+            let param_symbol = param.name;
+            let param_name = self.interner.resolve(param_symbol).unwrap();
+            let p = self
+                .builder
+                .build_gep(args, &[i64_t.const_int(i as u64, false)], param_name);
+            let p = self.builder.build_pointer_cast(
+                p,
+                any_ptr_t.pointer_type(AddressSpace::Generic),
+                param_name,
+            );
+            let p = self.builder.build_load(p, param_name);
+            env.insert(param_symbol, EnvValue::Local(p));
+        }
+
+        Ok(env)
+    }
+
+    fn compile_exp(&mut self, env: &Env<EnvValue>, exp: &Exp) -> Result<Value, Box<dyn Error>> {
         let result = match exp {
             Exp::Type(_) => panic!("compile_exp is called with Exp::Type"),
             Exp::Symbol(s) => match env.lookup(*s) {
@@ -206,12 +252,40 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             }
             Exp::Call(call) => {
                 let f = self.compile_exp(env, &call.fun)?;
-                let mut args = Vec::new();
-                for arg in &call.args {
-                    args.push(self.compile_exp(env, arg)?);
+                // let mut args = Vec::new();
+                // for arg in &call.args {
+                //     args.push(self.compile_exp(env, arg)?);
+                // }
+
+                let any_ptr_t = self
+                    .context
+                    .get_named_struct("Any")
+                    .unwrap()
+                    .pointer_type(AddressSpace::Generic);
+                let i64_t = self.context.int_type(64);
+
+                let size = i64_t.const_int(call.args.len() as u64, false);
+                let args = self.builder.build_array_alloca(any_ptr_t, size, "args");
+
+                for (i, arg) in call.args.iter().enumerate() {
+                    let arg = self.compile_exp(env, arg)?;
+                    let a_ptr = self.builder.build_gep(
+                        args,
+                        &[i64_t.const_int(i as u64, false)],
+                        "arg_ptr",
+                    );
+                    self.builder.build_store(a_ptr, arg);
                 }
 
-                self.builder.build_call(f, &args, "tmp")
+                self.build_call(
+                    f,
+                    &[
+                        self.builder.build_pointer_cast(f, any_ptr_t, "f_ptr"),
+                        size,
+                        args,
+                    ],
+                    "tmp",
+                )?
             }
             Exp::Block(block) => {
                 let mut result = None;
@@ -225,6 +299,16 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 bail!("function definition is not expected here")
             }
         };
+        Ok(result)
+    }
+
+    fn build_call(
+        &mut self,
+        f: Value,
+        args: &[Value],
+        name: &str,
+    ) -> Result<Value, Box<dyn Error>> {
+        let result = self.builder.build_call(f, args, name);
         Ok(result)
     }
 }

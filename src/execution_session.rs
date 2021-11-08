@@ -56,8 +56,13 @@ const STDLIB_LL: &str = r#"
     ret %Any* %result_any
   }
 
-  define %Any* @f64_mul(%Any* %a, %Any* %b) {
+  define %Any* @f64_mul(%Any* %this, i64 %n_args, %Any** %args) {
   entry:
+    %a_ptr = getelementptr %Any*, %Any** %args, i64 0
+    %a = load %Any*, %Any** %a_ptr, align 4
+    %b_ptr = getelementptr %Any*, %Any** %args, i64 1
+    %b = load %Any*, %Any** %b_ptr, align 4
+
     %f64_t = load %DataType*, %DataType** @f64
     %result_any = call %Any* @gc_allocate_with_typetag(i64 8, %DataType* %f64_t)
 
@@ -72,8 +77,13 @@ const STDLIB_LL: &str = r#"
     ret %Any* %result_any
   }
 
-  define %Any* @i64_mul(%Any* %a, %Any* %b) {
+  define %Any* @i64_mul(%Any* %this, i64 %n_args, %Any** %args) {
   entry:
+    %a_ptr = getelementptr %Any*, %Any** %args, i64 0
+    %a = load %Any*, %Any** %a_ptr, align 4
+    %b_ptr = getelementptr %Any*, %Any** %args, i64 1
+    %b = load %Any*, %Any** %b_ptr, align 4
+
     %i64_t = load %DataType*, %DataType** @i64
     %result_any = call %Any* @gc_allocate_with_typetag(i64 8, %DataType* %i64_t)
 
@@ -166,9 +176,9 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     fn build_stdlib(&mut self) -> Result<(), Box<dyn Error>> {
-        let any = self.context.context().create_named_struct_type("Any"); // opaque
-        let datatype = self.context.context().create_named_struct_type("DataType"); // to be defined
-        let datatype_ptr_t = datatype.pointer_type(AddressSpace::Generic);
+        let any_t = self.context.context().create_named_struct_type("Any"); // opaque
+        let datatype_t = self.context.context().create_named_struct_type("DataType"); // to be defined
+        let datatype_ptr_t = datatype_t.pointer_type(AddressSpace::Generic);
 
         self.types.insert(
             self.interner.intern("Any"),
@@ -202,11 +212,13 @@ impl<'ctx> ExecutionSession<'ctx> {
             },
         );
 
-        let ptr_t = any.pointer_type(AddressSpace::Generic);
+        let any_ptr_t = any_t.pointer_type(AddressSpace::Generic);
         let i64_t = self.context.context().int_type(64);
 
-        self.globals
-            .add_function("gc_allocate", ptr_t.function_type(&[i64_t.into()], false));
+        self.globals.add_function(
+            "gc_allocate",
+            any_ptr_t.function_type(&[i64_t.into()], false),
+        );
         self.jit
             .define_symbol("gc_allocate", gc_allocate as usize)?;
 
@@ -233,9 +245,10 @@ impl<'ctx> ExecutionSession<'ctx> {
             EnvValue::Global("DataType".to_string()),
         );
 
-        let type_of_ = self
-            .globals
-            .add_function("type_of", ptr_t.function_type(&[ptr_t.into()], false));
+        let type_of_ = self.globals.add_function(
+            "type_of",
+            any_ptr_t.function_type(&[any_ptr_t.into()], false),
+        );
         self.jit.define_symbol("type_of", type_of as usize)?;
         self.global_env.insert(
             self.interner.intern("type_of"),
@@ -253,16 +266,23 @@ impl<'ctx> ExecutionSession<'ctx> {
             "#,
         )?;
 
+        let fn_t = any_ptr_t.function_type(
+            &[
+                /* this: */ any_ptr_t,
+                /* n_args: */ i64_t,
+                /* args: */ any_ptr_t.pointer_type(AddressSpace::Generic),
+            ],
+            false,
+        );
+
         // stdlib.ll defines primitive operations
         self.load_ir_module("stdlib.ll", STDLIB_LL)?;
-        self.globals
-            .add_function("f64_mul", ptr_t.function_type(&[ptr_t, ptr_t], false));
+        self.globals.add_function("f64_mul", fn_t);
         self.global_env.insert(
             self.interner.intern("f64_mul"),
             EnvValue::Function("f64_mul".to_string()),
         );
-        self.globals
-            .add_function("i64_mul", ptr_t.function_type(&[ptr_t, ptr_t], false));
+        self.globals.add_function("i64_mul", fn_t);
         self.global_env.insert(
             self.interner.intern("i64_mul"),
             EnvValue::Function("i64_mul".to_string()),
@@ -382,12 +402,6 @@ impl<'ctx> ExecutionSession<'ctx> {
                 t
             }
             AlphaTypeDef::Struct { fields } => {
-                let any = self
-                    .context
-                    .context()
-                    .get_named_struct("Any")
-                    .unwrap()
-                    .pointer_type(AddressSpace::Generic);
                 let v = fields
                     .iter()
                     .map(|(_name, typ)| {
