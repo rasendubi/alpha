@@ -19,7 +19,7 @@ fn main() {
 
     let mut es = ExecutionSession::new();
 
-    let mut run_line = |line: &str| match es.run_line(line) {
+    let mut eval = |s: &str| match es.eval(s) {
         Ok(()) => {}
         Err(err) => println!("Error: {}", err),
     };
@@ -27,7 +27,7 @@ fn main() {
     loop {
         match rl.readline("user> ") {
             Err(_) => break,
-            Ok(line) => run_line(&line),
+            Ok(line) => eval(&line),
         }
     }
     rl.save_history(HISTORY_FILE).unwrap();

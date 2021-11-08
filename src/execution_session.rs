@@ -4,7 +4,6 @@ use std::error::Error;
 use llvm::module::Module;
 use llvm::orc::lljit::{LLJITBuilder, ResourceTracker, LLJIT};
 use llvm::orc::thread_safe::ThreadSafeContext;
-use llvm::pass_manager::FunctionPassManager;
 use llvm::types::{AddressSpace, Type};
 use llvm::values::Value;
 
@@ -14,7 +13,6 @@ use crate::exp;
 use crate::exp::{lower_sexp, Exp};
 use crate::gc::Gc;
 use crate::parser::Parser;
-use crate::sexp::SExp;
 use crate::symbol::SymbolInterner;
 use crate::types::{AlphaType, AlphaTypeDef};
 
@@ -36,6 +34,11 @@ unsafe fn dump_value(name: &str, value: AnyPtr) {
         println!("  u64= {}", *(value as *const u64));
         println!("  ptr= {:p}", *(value as *const *const ()));
     }
+}
+
+unsafe fn set_typetag<T>(ptr: *mut T, typetag: *const ()) {
+    let typetag_ptr = (ptr as *mut u64).sub(1) as *mut *const ();
+    *typetag_ptr = typetag;
 }
 
 unsafe fn type_of(x: AnyPtr) -> AnyPtr {
@@ -169,6 +172,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         es
     }
 
+    /// Initialize new module with common definitions copied from `self.globals` module.
     fn new_module(&self, name: &str) -> Module {
         let module = self.context.context().create_module(name);
 
@@ -182,17 +186,43 @@ impl<'ctx> ExecutionSession<'ctx> {
         module
     }
 
-    fn new_pass_manager(module: &Module) -> FunctionPassManager {
-        let fpm = FunctionPassManager::new_for_module(module);
-        // fpm.add_cfg_simplification_pass();
-        // fpm.add_instruction_combining_pass();
-        // fpm.add_reassociate_pass();
-        // fpm.add_gvn_pass();
-        // fpm.add_basic_alias_analysis_pass();
-        // fpm.initialize();
-        fpm
+    fn load_module(&mut self, module: Module) -> Result<(), Box<dyn Error>> {
+        module.dump_to_stderr();
+        let module = self.context.create_module(module);
+        self.jit.add_module(module)?;
+        Ok(())
     }
 
+    fn load_module_with_tracker(
+        &mut self,
+        module: Module,
+    ) -> Result<ResourceTracker, Box<dyn Error>> {
+        module.dump_to_stderr();
+        let module = self.context.create_module(module);
+        let tracker = self.jit.add_module_with_tracker(module)?;
+        Ok(tracker)
+    }
+
+    /// Load IR module using an independent context. This way, the module can (re)define any types
+    /// or functions without clogging the global context.
+    ///
+    /// The side effect of using a new context is that global functions/types defined in the IR
+    /// module are not added to the `self.context` and must be added explicitly.
+    fn load_ir_module(&mut self, name: &str, ir: &str) -> Result<(), Box<dyn Error>> {
+        let tsc = ThreadSafeContext::new();
+        let module = tsc.context().parse_ir_module(name, ir)?;
+        module.dump_to_stderr();
+        let module = tsc.create_module(module);
+        self.jit.add_module(module)?;
+        Ok(())
+    }
+
+    /// Build Alpha standard library.
+    ///
+    /// This function initializes `self.globals` module and loads LLVM definitions that are required
+    /// for compiler to work.
+    ///
+    /// This functions must be called once before any other operation on ExecutionSession.
     fn build_stdlib(&mut self) -> Result<(), Box<dyn Error>> {
         let any_t = self.context.context().create_named_struct_type("Any"); // opaque
         let datatype_t = self.context.context().create_named_struct_type("DataType"); // to be defined
@@ -256,7 +286,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             let datatype = gc_allocate(16) as *mut u64;
             // Type is self-referencial:
             // typeof(DataType) == DataType
-            Self::set_typetag(datatype, datatype as *const ());
+            set_typetag(datatype, datatype as *const ());
             *datatype.add(0) = 16;
             *datatype.add(1) = 0;
             datatype
@@ -284,7 +314,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_module(self.globals.clone())?;
 
         // poor man's standard library
-        self.run_line(
+        self.eval(
             r#"
               type i64 = integer(64)
               type f64 = float(64)
@@ -310,7 +340,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             EnvValue::Function("i64_mul".to_string()),
         );
 
-        self.run_line(
+        self.eval(
             r#"
               fn *(x: f64, y: f64) = f64_mul(x, y)
             "#,
@@ -319,24 +349,35 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(())
     }
 
-    pub fn run_line(&mut self, line: &str) -> Result<(), Box<dyn Error>> {
-        let mut parser = Parser::new(line);
+    pub fn eval(&mut self, s: &str) -> Result<(), Box<dyn Error>> {
+        let mut parser = Parser::new(s);
         while parser.has_input() {
             let sexp = parser.parse()?;
             println!("sexp: {}", sexp);
-            self.run_sexp(&sexp)?;
+            println!();
+
+            let exp = lower_sexp(&sexp, &mut self.interner)?;
+            println!("exp: {:?}\n", &exp);
+
+            self.eval_exp(exp)?;
         }
 
         Ok(())
     }
 
-    unsafe fn set_typetag<T>(ptr: *mut T, typetag: *const ()) {
-        let typetag_ptr = (ptr as *mut u64).sub(1) as *mut *const ();
-        *typetag_ptr = typetag;
+    fn eval_exp(&mut self, exp: Exp) -> Result<(), Box<dyn Error>> {
+        match exp {
+            Exp::Type(t) => {
+                let alpha_type = AlphaType::from_exp(&t, &self.types)?;
+                self.eval_type(&alpha_type)
+            }
+            Exp::Function(f) => self.eval_function_definition(f),
+            e => self.eval_anonymous_expression(e),
+        }
     }
 
     // Build a global type binding and initialize it. This does not execute any code inside the JIT.
-    fn build_type(&mut self, alpha_type: &AlphaType) -> Result<(), Box<dyn Error>> {
+    fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<(), Box<dyn Error>> {
         println!("type lowered to {:?}", alpha_type);
 
         let type_size = alpha_type
@@ -353,7 +394,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let datatype_t = self.jit.lookup::<*const *const ()>("DataType")?;
         let type_ptr = unsafe {
             let type_ptr = gc_allocate(8) as *mut u64;
-            Self::set_typetag(type_ptr, *datatype_t);
+            set_typetag(type_ptr, *datatype_t);
             *type_ptr.add(0) = type_size as u64;
             *type_ptr.add(1) = n_ptrs as u64;
 
@@ -448,100 +489,68 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(t)
     }
 
-    /// Load IR module using a standalone context. This way, the module can (re)define any types or
-    /// functions without clogging the global context.
-    ///
-    /// The side effect is that global functions/types defined in the IR module must be explicitly
-    /// added to the default context for them to be available.
-    fn load_ir_module(&mut self, name: &str, ir: &str) -> Result<(), Box<dyn Error>> {
-        let context = ThreadSafeContext::new();
-        let module = context.context().parse_ir_module(name, ir)?;
-        module.dump_to_stderr();
-        let module = context.create_module(module);
-        self.jit.add_module(module)?;
-        Ok(())
-    }
-
-    fn load_module(&mut self, module: Module) -> Result<(), Box<dyn Error>> {
-        module.dump_to_stderr();
-        let module = self.context.create_module(module);
-        self.jit.add_module(module)?;
-        Ok(())
-    }
-
-    fn load_module_with_tracker(
-        &mut self,
-        module: Module,
-    ) -> Result<ResourceTracker, Box<dyn Error>> {
-        module.dump_to_stderr();
-        let module = self.context.create_module(module);
-        let tracker = self.jit.add_module_with_tracker(module)?;
-        Ok(tracker)
-    }
-
-    fn run_sexp(&mut self, sexp: &SExp) -> Result<(), Box<dyn Error>> {
-        let exp = lower_sexp(&sexp, &mut self.interner)?;
-        println!("\nexp: {:?}\n", &exp);
-
-        if let Exp::Type(t) = &exp {
-            let alpha_type = AlphaType::from_exp(t, &self.types)?;
-            return self.build_type(&alpha_type);
-        }
-
-        let (def, is_anonymous) = match exp {
-            Exp::Function(f) => (f, false),
-            e => (
-                exp::Function {
-                    prototype: exp::FunctionPrototype {
-                        name: self.interner.intern("*anonymous*"),
-                        params: vec![],
-                        result_type: None,
-                    },
-                    body: Some(Box::new(e)),
-                },
-                true,
-            ),
-        };
-
+    fn eval_function_definition(&mut self, def: exp::Function) -> Result<(), Box<dyn Error>> {
         let module = self.new_module("user");
-        let fpm = Self::new_pass_manager(&module);
 
         let f = Compiler::compile(
             &mut self.interner,
             self.context.context(),
             &module,
-            &fpm,
             &self.global_env,
             &def,
         )?;
 
         let name = f.get_name();
-        if is_anonymous {
-            self.save_global_declarations(&module);
-            // We don't save function declarations as the only new function here is *anonymous* and
-            // we don't need to save it.
 
-            let tracker = self.load_module_with_tracker(module)?;
-            let fun = self
-                .jit
-                .lookup::<extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr>(&name)?;
-            unsafe {
-                let result = fun(std::ptr::null(), 0, std::ptr::null());
-                dump_value("result", result);
-            }
+        self.global_env
+            .insert(def.prototype.name, EnvValue::Function(name.to_string()));
 
-            // This was just an anonymous function. We can unload the module as it is no longer
-            // useful.
-            tracker.remove()?;
-        } else {
-            self.global_env
-                .insert(def.prototype.name, EnvValue::Function(name.to_string()));
+        self.save_global_declarations(&module);
+        self.save_function_declarations(&module);
 
-            self.save_global_declarations(&module);
-            self.save_function_declarations(&module);
+        self.load_module(module)?;
 
-            self.load_module(module)?;
+        Ok(())
+    }
+
+    fn eval_anonymous_expression(&mut self, e: Exp) -> Result<(), Box<dyn Error>> {
+        let def = exp::Function {
+            prototype: exp::FunctionPrototype {
+                name: self.interner.intern("*anonymous*"),
+                params: vec![],
+                result_type: None,
+            },
+            body: Some(Box::new(e)),
+        };
+
+        let module = self.new_module("user");
+
+        let f = Compiler::compile(
+            &mut self.interner,
+            self.context.context(),
+            &module,
+            &self.global_env,
+            &def,
+        )?;
+
+        let name = f.get_name();
+
+        self.save_global_declarations(&module);
+        // We don't save function declarations as the only new function here is *anonymous* and
+        // we don't need to save it.
+
+        let tracker = self.load_module_with_tracker(module)?;
+        let fun = self
+            .jit
+            .lookup::<extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr>(&name)?;
+        unsafe {
+            let result = fun(std::ptr::null(), 0, std::ptr::null());
+            dump_value("result", result);
         }
+
+        // This was just an anonymous function. We can unload the module as it is no longer
+        // useful.
+        tracker.remove()?;
 
         Ok(())
     }

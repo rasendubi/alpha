@@ -3,7 +3,6 @@ use std::error::Error;
 use llvm::builder::Builder;
 use llvm::context::Context;
 use llvm::module::Module;
-use llvm::pass_manager::FunctionPassManager;
 use llvm::types::AddressSpace;
 use llvm::values::Value;
 
@@ -20,7 +19,6 @@ pub struct Compiler<'a, 'ctx> {
     interner: &'a mut SymbolInterner,
     context: &'ctx Context,
     builder: Builder,
-    fpm: &'a FunctionPassManager,
     module: &'a Module,
     global_env: &'a Env<'a, EnvValue>,
 }
@@ -48,7 +46,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         interner: &'a mut SymbolInterner,
         context: &'ctx Context,
         module: &'a Module,
-        pass_manager: &'a FunctionPassManager,
         env: &'a Env<'a, EnvValue>,
         f: &exp::Function,
     ) -> Result<Value, Box<dyn Error>> {
@@ -56,7 +53,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             interner,
             context,
             builder: context.create_builder(),
-            fpm: pass_manager,
             module,
             global_env: env,
         };
@@ -122,7 +118,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         self.builder.build_ret(result);
 
         if function.verify_function() {
-            self.fpm.run(function);
             Ok(function)
         } else {
             eprintln!("\ninvalid function generated:");
