@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::error::Error;
 
+use simple_error::simple_error;
+
 use llvm::module::Module;
 use llvm::orc::lljit::{LLJITBuilder, ResourceTracker, LLJIT};
 use llvm::orc::thread_safe::ThreadSafeContext;
@@ -32,6 +34,7 @@ type GenericFn = unsafe extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr;
 #[derive(Debug)]
 #[repr(C)]
 struct DataType {
+    supertype: *const AbstractType,
     size: u64,
     n_ptrs: u64,
     methods: *mut Vec<Method>,
@@ -39,7 +42,9 @@ struct DataType {
 
 #[derive(Debug)]
 #[repr(C)]
-struct AbstractType {}
+struct AbstractType {
+    supertype: *const AbstractType,
+}
 
 #[cfg(test)]
 #[test]
@@ -212,6 +217,15 @@ pub enum EnvValue {
     Local(Value),
 }
 
+impl EnvValue {
+    fn as_global(&self) -> &str {
+        match self {
+            EnvValue::Global(s) => s,
+            _ => panic!("EnvValue::as_global() called on non-global"),
+        }
+    }
+}
+
 pub struct ExecutionSession<'ctx> {
     /// A global counter to make function names unique.
     counter: usize,
@@ -326,17 +340,46 @@ impl<'ctx> ExecutionSession<'ctx> {
             self.interner.intern("Any"),
             AlphaType {
                 name: self.interner.intern("Any"),
+                supertype: self.interner.intern("Any"),
                 typedef: AlphaTypeDef::Abstract,
             },
         );
+        let type_typedef = AlphaType {
+            name: self.interner.intern("Type"),
+            supertype: self.interner.intern("Any"),
+            typedef: AlphaTypeDef::Abstract,
+        };
+        self.types
+            .insert(self.interner.intern("Type"), type_typedef.clone());
+        let abstracttype_typedef = AlphaType {
+            name: self.interner.intern("AbstractType"),
+            supertype: self.interner.intern("Type"),
+            typedef: AlphaTypeDef::Struct {
+                fields: vec![(
+                    self.interner.intern("supertype"),
+                    // this is supertype: Type, but in reality it should be supertype: AbstractType
+                    type_typedef,
+                )],
+            },
+        };
+        self.types.insert(
+            self.interner.intern("AbstractType"),
+            abstracttype_typedef.clone(),
+        );
         let datatype_typedef = AlphaType {
             name: self.interner.intern("DataType"),
+            supertype: self.interner.intern("Type"),
             typedef: AlphaTypeDef::Struct {
                 fields: vec![
+                    (
+                        self.interner.intern("supertype"),
+                        abstracttype_typedef.clone(),
+                    ),
                     (
                         self.interner.intern("size"),
                         AlphaType {
                             name: self.interner.intern("i64"),
+                            supertype: self.interner.intern("Any"),
                             typedef: AlphaTypeDef::Int(64),
                         },
                     ),
@@ -344,6 +387,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                         self.interner.intern("n_ptrs"),
                         AlphaType {
                             name: self.interner.intern("i64"),
+                            supertype: self.interner.intern("Any"),
                             typedef: AlphaTypeDef::Int(64),
                         },
                     ),
@@ -352,6 +396,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                         AlphaType {
                             // actually: pointer to Vec<Method>
                             name: self.interner.intern("i64"),
+                            supertype: self.interner.intern("Any"),
                             typedef: AlphaTypeDef::Int(64),
                         },
                     ),
@@ -360,14 +405,6 @@ impl<'ctx> ExecutionSession<'ctx> {
         };
         self.types
             .insert(self.interner.intern("DataType"), datatype_typedef.clone());
-        let abstracttype_typedef = AlphaType {
-            name: self.interner.intern("AbstractType"),
-            typedef: AlphaTypeDef::Struct { fields: vec![] },
-        };
-        self.types.insert(
-            self.interner.intern("AbstractType"),
-            abstracttype_typedef.clone(),
-        );
 
         let any_ptr_t = any_t.pointer_type(AddressSpace::Generic);
         let i64_t = self.context.context().int_type(64);
@@ -390,10 +427,17 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.globals.add_function("dispatch", fn_t);
         self.jit.define_symbol("dispatch", dispatch as usize)?;
 
-        let any =
-            unsafe { gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType };
-        let type_ =
-            unsafe { gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType };
+        let any = unsafe {
+            let any = gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType;
+            *any = AbstractType { supertype: any };
+            any
+        };
+        let type_ = unsafe {
+            let type_ =
+                gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType;
+            *type_ = AbstractType { supertype: any };
+            type_
+        };
 
         let datatype = unsafe {
             let datatype = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
@@ -401,6 +445,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             // typeof(DataType) == DataType
             set_typetag(datatype, datatype);
             *datatype = DataType {
+                supertype: type_,
                 size: std::mem::size_of::<DataType>() as u64,
                 n_ptrs: 0,
                 methods: Box::into_raw(Box::new(Vec::new())),
@@ -417,6 +462,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             let abstracttype = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
             set_typetag(abstracttype, datatype);
             *abstracttype = DataType {
+                supertype: type_,
                 size: std::mem::size_of::<AbstractType>() as u64,
                 n_ptrs: 0,
                 methods: Box::into_raw(Box::new(Vec::new())),
@@ -573,13 +619,29 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<AnyPtrMut, Box<dyn Error>> {
         println!("type lowered to {:?}", alpha_type);
 
+        let supertype_t = self
+            .global_env
+            .lookup(alpha_type.supertype)
+            .ok_or_else(|| {
+                simple_error!(
+                    "unable to find type: {}",
+                    self.interner.resolve(alpha_type.supertype).unwrap()
+                )
+            })?;
+        let supertype_ptr = self
+            .jit
+            .lookup::<*const *const AbstractType>(supertype_t.as_global())?;
+
         if alpha_type.typedef == AlphaTypeDef::Abstract {
+            // TODO: verify the type is abstract
             let abstracttype_t = self.jit.lookup::<*const *const DataType>("AbstractType")?;
             let type_ptr = unsafe {
                 let type_ptr =
                     gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType;
                 set_typetag(type_ptr, *abstracttype_t);
-                *type_ptr = AbstractType {};
+                *type_ptr = AbstractType {
+                    supertype: *supertype_ptr,
+                };
                 type_ptr
             };
 
@@ -618,6 +680,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             let type_ptr = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
             set_typetag(type_ptr, *datatype_t);
             *type_ptr = DataType {
+                supertype: *supertype_ptr,
                 size: type_size as u64,
                 n_ptrs: n_ptrs as u64,
                 methods: Box::into_raw(Box::new(Vec::new())),
@@ -790,9 +853,11 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     fn define_function_type(&mut self, fn_name: &str) -> Result<*mut DataType, Box<dyn Error>> {
+        let any_s = self.interner.intern("Any");
         let fn_t_name = self.interner.intern(&(fn_name.to_string() + "_t"));
         let fn_t = self.eval_type(&AlphaType {
             name: fn_t_name,
+            supertype: any_s,
             typedef: AlphaTypeDef::Struct { fields: Vec::new() },
         })?;
         Ok(fn_t as *mut DataType)

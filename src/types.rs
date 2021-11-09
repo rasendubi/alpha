@@ -7,6 +7,7 @@ use crate::symbol::Symbol;
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct AlphaType {
     pub name: Symbol,
+    pub supertype: Symbol,
     pub typedef: AlphaTypeDef,
 }
 
@@ -24,6 +25,7 @@ impl AlphaType {
         types: &Env<AlphaType>,
     ) -> Result<AlphaType, Box<dyn Error>> {
         let name = e.name;
+        let supertype = e.supertype;
         let typedef = match &e.specifier {
             TypeSpecifier::Abstract => AlphaTypeDef::Abstract,
             TypeSpecifier::Integer(n) => AlphaTypeDef::Int(*n),
@@ -43,7 +45,11 @@ impl AlphaType {
             }
         };
 
-        Ok(AlphaType { name, typedef })
+        Ok(AlphaType {
+            name,
+            supertype,
+            typedef,
+        })
     }
 }
 
