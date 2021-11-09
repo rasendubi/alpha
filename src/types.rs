@@ -25,6 +25,7 @@ impl AlphaType {
     ) -> Result<AlphaType, Box<dyn Error>> {
         let name = e.name;
         let typedef = match &e.specifier {
+            TypeSpecifier::Abstract => AlphaTypeDef::Abstract,
             TypeSpecifier::Integer(n) => AlphaTypeDef::Int(*n),
             TypeSpecifier::Float(n) => AlphaTypeDef::Float(*n),
             TypeSpecifier::Struct(fields) => {
@@ -47,6 +48,8 @@ impl AlphaType {
 }
 
 impl AlphaTypeDef {
+    /// Returns `true` if this type can be inlined as a field. i.e. size of the type is known and <
+    /// 8 bytes.
     pub fn is_inlinable(&self) -> bool {
         match self {
             AlphaTypeDef::Abstract => false,
@@ -56,6 +59,7 @@ impl AlphaTypeDef {
         }
     }
 
+    /// Returns `true` if values of that type can contain pointers.
     pub fn has_ptrs(&self) -> bool {
         match self {
             AlphaTypeDef::Abstract => true,
@@ -67,6 +71,8 @@ impl AlphaTypeDef {
         }
     }
 
+    /// Returns `true` if fields of that type (potentially inlined) contain pointers that GC needs
+    /// to traverse.
     pub fn is_ptr(&self) -> bool {
         if self.is_inlinable() {
             self.has_ptrs()

@@ -25,6 +25,7 @@ unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
 }
 
 type AnyPtr = *const u64;
+type AnyPtrMut = *mut u64;
 type GenericFn = unsafe extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr;
 
 // type DataType = { size: i64, n_ptrs: i64, methods: i64 }
@@ -36,11 +37,21 @@ struct DataType {
     methods: *mut Vec<Method>,
 }
 
+#[derive(Debug)]
+#[repr(C)]
+struct AbstractType {}
+
 #[cfg(test)]
 #[test]
 fn test_datatype_size() {
     // the size should match size 3 cells exactly
     assert_eq!(std::mem::size_of::<DataType>(), 24);
+}
+
+#[cfg(test)]
+#[test]
+fn test_abstracttype_size() {
+    assert_eq!(std::mem::size_of::<AbstractType>(), 0);
 }
 
 #[derive(Debug)]
@@ -98,6 +109,16 @@ unsafe extern "C" fn alpha_print_datatype(
     args: *const AnyPtr,
 ) -> AnyPtr {
     let x = &*(*args.add(0) as *const DataType);
+    println!("{:?}", x);
+    std::ptr::null()
+}
+
+unsafe extern "C" fn alpha_print_abstracttype(
+    _this: AnyPtr,
+    _n_args: i64,
+    args: *const AnyPtr,
+) -> AnyPtr {
+    let x = &*(*args.add(0) as *const AbstractType);
     println!("{:?}", x);
     std::ptr::null()
 }
@@ -295,6 +316,11 @@ impl<'ctx> ExecutionSession<'ctx> {
         let any_t = self.context.context().create_named_struct_type("Any"); // opaque
         let datatype_t = self.context.context().create_named_struct_type("DataType"); // to be defined
         let datatype_ptr_t = datatype_t.pointer_type(AddressSpace::Generic);
+        let abstracttype_t = self
+            .context
+            .context()
+            .create_named_struct_type("AbstractType"); // to be defined
+        let abstracttype_ptr_t = abstracttype_t.pointer_type(AddressSpace::Generic);
 
         self.types.insert(
             self.interner.intern("Any"),
@@ -334,6 +360,14 @@ impl<'ctx> ExecutionSession<'ctx> {
         };
         self.types
             .insert(self.interner.intern("DataType"), datatype_typedef.clone());
+        let abstracttype_typedef = AlphaType {
+            name: self.interner.intern("AbstractType"),
+            typedef: AlphaTypeDef::Struct { fields: vec![] },
+        };
+        self.types.insert(
+            self.interner.intern("AbstractType"),
+            abstracttype_typedef.clone(),
+        );
 
         let any_ptr_t = any_t.pointer_type(AddressSpace::Generic);
         let i64_t = self.context.context().int_type(64);
@@ -356,13 +390,18 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.globals.add_function("dispatch", fn_t);
         self.jit.define_symbol("dispatch", dispatch as usize)?;
 
+        let any =
+            unsafe { gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType };
+        let type_ =
+            unsafe { gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType };
+
         let datatype = unsafe {
             let datatype = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
             // Type is self-referencial:
             // typeof(DataType) == DataType
             set_typetag(datatype, datatype);
             *datatype = DataType {
-                size: 24,
+                size: std::mem::size_of::<DataType>() as u64,
                 n_ptrs: 0,
                 methods: Box::into_raw(Box::new(Vec::new())),
             };
@@ -372,6 +411,37 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.global_env.insert(
             self.interner.intern("DataType"),
             EnvValue::Global("DataType".to_string()),
+        );
+
+        let abstracttype = unsafe {
+            let abstracttype = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
+            set_typetag(abstracttype, datatype);
+            *abstracttype = DataType {
+                size: std::mem::size_of::<AbstractType>() as u64,
+                n_ptrs: 0,
+                methods: Box::into_raw(Box::new(Vec::new())),
+            };
+            abstracttype
+        };
+        self.inject_global(&self.globals, "AbstractType", datatype_ptr_t, abstracttype);
+        self.global_env.insert(
+            self.interner.intern("AbstractType"),
+            EnvValue::Global("AbstractType".to_string()),
+        );
+
+        unsafe {
+            set_typetag(any, abstracttype);
+            set_typetag(type_, abstracttype);
+        }
+        self.inject_global(&self.globals, "Any", abstracttype_ptr_t, any);
+        self.global_env.insert(
+            self.interner.intern("Any"),
+            EnvValue::Global("Any".to_string()),
+        );
+        self.inject_global(&self.globals, "Type", abstracttype_ptr_t, type_);
+        self.global_env.insert(
+            self.interner.intern("Type"),
+            EnvValue::Global("Type".to_string()),
         );
 
         // Add a copy of the globals module to jit, so globals with initializers are defined.
@@ -387,6 +457,10 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         // DataType type specifier can only be built after i64 and f64 are defined in alpha.
         let t = self.build_type_specifier(&datatype_typedef)?;
+        eprint!("defined type: ");
+        t.dump_to_stderr();
+        eprintln!();
+        let t = self.build_type_specifier(&abstracttype_typedef)?;
         eprint!("defined type: ");
         t.dump_to_stderr();
         eprintln!();
@@ -448,6 +522,13 @@ impl<'ctx> ExecutionSession<'ctx> {
                 instance: alpha_print_datatype,
             },
         );
+        self.add_method(
+            print_t,
+            Method {
+                signature: vec![abstracttype],
+                instance: alpha_print_abstracttype,
+            },
+        );
 
         self.eval(
             r#"
@@ -489,8 +570,39 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     // Build a global type binding and initialize it. This does not execute any code inside the JIT.
-    fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<*mut DataType, Box<dyn Error>> {
+    fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<AnyPtrMut, Box<dyn Error>> {
         println!("type lowered to {:?}", alpha_type);
+
+        if alpha_type.typedef == AlphaTypeDef::Abstract {
+            let abstracttype_t = self.jit.lookup::<*const *const DataType>("AbstractType")?;
+            let type_ptr = unsafe {
+                let type_ptr =
+                    gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType;
+                set_typetag(type_ptr, *abstracttype_t);
+                *type_ptr = AbstractType {};
+                type_ptr
+            };
+
+            let name = self.interner.resolve(alpha_type.name).unwrap();
+            let module = self.context.context().create_module(name);
+
+            let ptr_t = self
+                .context
+                .context()
+                .get_named_struct("AbstractType")
+                .unwrap()
+                .pointer_type(AddressSpace::Generic);
+            self.inject_global(&module, name, ptr_t, type_ptr);
+
+            self.globals.add_global(name, ptr_t); // without initializer here
+            self.global_env
+                .insert(alpha_type.name, EnvValue::Global(name.to_string()));
+            self.types.insert(alpha_type.name, alpha_type.clone());
+
+            self.load_module(module)?;
+
+            return Ok(type_ptr as AnyPtrMut);
+        }
 
         let type_size = alpha_type
             .typedef
@@ -544,7 +656,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         self.load_module(module)?;
 
-        Ok(type_ptr)
+        Ok(type_ptr as AnyPtrMut)
     }
 
     fn build_type_specifier(&mut self, type_: &AlphaType) -> Result<Type, Box<dyn Error>> {
@@ -572,13 +684,24 @@ impl<'ctx> ExecutionSession<'ctx> {
             AlphaTypeDef::Struct { fields } => {
                 let v = fields
                     .iter()
-                    .map(|(_name, typ)| {
-                        let name = self.interner.resolve(typ.name).unwrap();
-                        let field_t = self.context.context().get_named_struct(name).unwrap();
-                        if typ.typedef.is_inlinable() {
-                            field_t
+                    .map(|(_name, type_)| {
+                        let name = self.interner.resolve(type_.name).unwrap();
+                        if type_.typedef == AlphaTypeDef::Abstract {
+                            // Even though typ can be more concrete than Any, we still define the
+                            // field as %Any* in LLVM. %Any in LLVM IR means that specific DataType
+                            // is unknown.
+                            self.context
+                                .context()
+                                .get_named_struct("Any")
+                                .unwrap()
+                                .pointer_type(AddressSpace::Generic)
                         } else {
-                            field_t.pointer_type(AddressSpace::Generic)
+                            let field_t = self.context.context().get_named_struct(name).unwrap();
+                            if type_.typedef.is_inlinable() {
+                                field_t
+                            } else {
+                                field_t.pointer_type(AddressSpace::Generic)
+                            }
                         }
                     })
                     .collect::<Vec<_>>();
@@ -672,7 +795,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             name: fn_t_name,
             typedef: AlphaTypeDef::Struct { fields: Vec::new() },
         })?;
-        Ok(fn_t)
+        Ok(fn_t as *mut DataType)
     }
 
     fn define_function_object(

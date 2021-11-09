@@ -29,6 +29,7 @@ pub struct TypeDefinition {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TypeSpecifier {
+    Abstract,
     Integer(usize),
     Float(usize),
     Struct(Vec<StructFieldSpecifier>),
@@ -201,6 +202,7 @@ fn lower_type_specifier(
 
             TypeSpecifier::Struct(fields)
         }
+        Exp::Symbol(s) if *s == interner.intern("abstract") => TypeSpecifier::Abstract,
         e => bail!("type specifier should be a call, given: {:?}", e),
     };
     Ok(specifier)
