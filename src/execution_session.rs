@@ -50,9 +50,53 @@ struct AbstractType {
 
 #[derive(Debug)]
 struct Method {
-    signature: Vec<*const DataType>,
+    signature: Vec<AnyPtr>,
     // compiled instance of the method
     instance: GenericFn,
+}
+
+impl Method {
+    fn is_subtype_of(&self, other: &Self) -> bool {
+        let collect_cpls = |x: &Self| {
+            x.signature
+                .iter()
+                .map(|x| unsafe {
+                    get_cpl(
+                        // this is a very dangerous unsafe transmute of possibly *const AbstractType to *const
+                        // DataType. It should be fine as long as both start with supertype.
+                        *x as *const DataType,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let a_cpls = collect_cpls(self);
+        let b_cpls = collect_cpls(other);
+
+        // find an element that is strictly more specific
+        let mut subtype_index = None;
+        for (i, (a, b)) in a_cpls.iter().zip(b_cpls.iter()).enumerate() {
+            if a.contains(&b[0]) {
+                subtype_index = Some(i);
+                break;
+            }
+        }
+
+        let subtype_index = match subtype_index {
+            Some(i) => i,
+            None => return false,
+        };
+
+        // all other elements should not be less specific
+        for (i, (a, b)) in a_cpls.iter().zip(b_cpls.iter()).enumerate() {
+            if i != subtype_index {
+                if b[1..].contains(&a[0]) {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
 }
 
 unsafe fn dump_value(name: &str, value: AnyPtr) {
@@ -62,6 +106,13 @@ unsafe fn dump_value(name: &str, value: AnyPtr) {
         println!("  f64= {:.5}", *(value as *const f64));
         println!("  u64= {}", *(value as *const u64));
         println!("  ptr= {:p}", *(value as *const *const ()));
+
+        let cpl = get_cpl(type_of(value as AnyPtr) as *const DataType);
+        println!("  cpl= [");
+        for c in cpl {
+            println!("    {:p}", c);
+        }
+        println!("  ]");
     }
 }
 
@@ -74,15 +125,28 @@ unsafe fn get_typetag<T>(ptr: *const T) -> *const DataType {
     *typetag_ptr
 }
 
-unsafe fn type_of(x: AnyPtr) -> AnyPtr {
-    let result = *x.sub(1) as AnyPtr;
+unsafe fn type_of(x: AnyPtr) -> *const DataType {
+    let result = *x.sub(1) as *const DataType;
     // println!("type_of({:p}) = {:p} (typetag @ {:p})", x, result, x.sub(1));
     result
 }
 
+// CPL = class precedence list
+unsafe fn get_cpl(t: *const DataType) -> Vec<AnyPtr> {
+    let mut cpl = Vec::new();
+    cpl.push(t as AnyPtr);
+    let mut supertype = (*t).supertype;
+    cpl.push(supertype as AnyPtr);
+    while supertype != (*supertype).supertype {
+        supertype = (*supertype).supertype;
+        cpl.push(supertype as AnyPtr);
+    }
+    cpl
+}
+
 unsafe extern "C" fn alpha_type_of(_this: AnyPtr, _n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let x = *args.add(0);
-    type_of(x)
+    type_of(x) as AnyPtr
 }
 
 unsafe extern "C" fn alpha_print_i64(_this: AnyPtr, _n_args: i64, args: *const AnyPtr) -> AnyPtr {
@@ -103,7 +167,7 @@ unsafe extern "C" fn alpha_print_datatype(
     args: *const AnyPtr,
 ) -> AnyPtr {
     let x = &*(*args.add(0) as *const DataType);
-    println!("{:?}", x);
+    println!("{:#?}", x);
     std::ptr::null()
 }
 
@@ -120,23 +184,60 @@ unsafe extern "C" fn alpha_print_abstracttype(
 unsafe extern "C" fn dispatch(f: AnyPtr, n_args: i64, args: *const AnyPtr) -> AnyPtr {
     println!("dispatch: {:p} {}", f, n_args);
     let typetag = get_typetag(f);
-    let methods = &*(*typetag).methods;
+    let methods = &(*typetag).methods;
 
     let args_slice = std::slice::from_raw_parts(args, n_args as usize);
-    let signature = args_slice
+    let args_cpls = args_slice
         .iter()
-        .map(|a| type_of(*a) as *const DataType)
+        .map(|x| get_cpl(type_of(*x)))
         .collect::<Vec<_>>();
 
-    for method in methods {
-        if signature == method.signature {
-            return (method.instance)(f, n_args, args);
+    let mut selected_method: Option<&Method> = None;
+    'next: for method in methods {
+        if method.signature.len() != args_slice.len() {
+            continue 'next;
         }
+
+        for (i, param) in method.signature.iter().enumerate() {
+            if !args_cpls[i].contains(param) {
+                continue 'next;
+            }
+        }
+
+        // this method is applicable
+
+        selected_method = Some(match selected_method {
+            None => method,
+            Some(current) => {
+                // check if it is strictly more specific
+                if current.is_subtype_of(method) {
+                    // selected method remains selected, skip this one
+                    current
+                } else if method.is_subtype_of(current) {
+                    // the new method is more specific
+                    method
+                } else {
+                    // Both methods are applicable but neither is more specific — ambiguity.
+                    let signature = args_slice.iter().map(|a| type_of(*a)).collect::<Vec<_>>();
+                    eprintln!("ambiguity finding matching method for: {:?}", signature);
+                    eprintln!("available methods: {:?}", methods);
+                    eprintln!("cpls: {:?}", args_cpls);
+                    panic!("ambiguity! between {:?} and {:?}", current, method);
+                }
+            }
+        });
     }
 
-    eprintln!("unable to find matching method: {:?}", signature);
-    eprintln!("available methods: {:?}", methods);
-    panic!("unable to find matching method");
+    match selected_method {
+        Some(method) => (method.instance)(f, n_args, args),
+        None => {
+            let signature = args_slice.iter().map(|a| type_of(*a)).collect::<Vec<_>>();
+            eprintln!("unable to find matching method: {:?}", signature);
+            eprintln!("available methods: {:?}", methods);
+            eprintln!("cpls: {:?}", args_cpls);
+            panic!("unable to find matching method");
+        }
+    }
 }
 
 // TODO: generating all primitive operations as IR from Rust code might be easier to implement (less
@@ -512,14 +613,14 @@ impl<'ctx> ExecutionSession<'ctx> {
         let f64_t = unsafe { *self.jit.lookup::<*const *const DataType>("f64")? };
 
         let type_of_s = self.interner.intern("type_of");
-        // TODO: support generic methods
-        // self.add_method(
-        //     self.define_function(type_of_s)?,
-        //     Method {
-        //         signature: vec![any_t],
-        //         instance: alpha_type_of,
-        //     },
-        // );
+        let type_of_t = self.define_function(type_of_s)?;
+        self.add_method(
+            type_of_t,
+            Method {
+                signature: vec![any as AnyPtr],
+                instance: alpha_type_of,
+            },
+        );
 
         // stdlib.ll defines primitive operations
         self.load_ir_module("stdlib.ll", STDLIB_LL)?;
@@ -528,7 +629,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.add_method(
             f64_mul_t,
             Method {
-                signature: vec![f64_t, f64_t],
+                signature: vec![f64_t as AnyPtr, f64_t as AnyPtr],
                 instance: self.jit.lookup::<GenericFn>("f64_mul")?,
             },
         );
@@ -537,7 +638,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.add_method(
             i64_mul_t,
             Method {
-                signature: vec![i64_t, i64_t],
+                signature: vec![i64_t as AnyPtr, i64_t as AnyPtr],
                 instance: self.jit.lookup::<GenericFn>("i64_mul")?,
             },
         );
@@ -547,28 +648,28 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.add_method(
             print_t,
             Method {
-                signature: vec![i64_t],
+                signature: vec![i64_t as AnyPtr],
                 instance: alpha_print_i64,
             },
         );
         self.add_method(
             print_t,
             Method {
-                signature: vec![f64_t],
+                signature: vec![f64_t as AnyPtr],
                 instance: alpha_print_f64,
             },
         );
         self.add_method(
             print_t,
             Method {
-                signature: vec![datatype],
+                signature: vec![datatype as AnyPtr],
                 instance: alpha_print_datatype,
             },
         );
         self.add_method(
             print_t,
             Method {
-                signature: vec![abstracttype],
+                signature: vec![abstracttype as AnyPtr],
                 instance: alpha_print_abstracttype,
             },
         );
@@ -804,12 +905,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                             Some(EnvValue::Global(s)) => s,
                             _ => panic!("unable to lookup: {:?}", p.typ),
                         };
-                        unsafe {
-                            *self
-                                .jit
-                                .lookup::<*const *const DataType>(llvm_name)
-                                .unwrap()
-                        }
+                        unsafe { *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap() }
                     })
                     .collect(),
                 instance,
@@ -842,7 +938,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
     fn define_function_type(&mut self, fn_name: &str) -> Result<*mut DataType, Box<dyn Error>> {
         let any_s = self.interner.intern("Any");
-        let fn_t_name = self.interner.intern(&(fn_name.to_string() + "_t"));
+        let fn_t_name = self.interner.intern(&("fn_".to_string() + fn_name + "_t"));
         let fn_t = self.eval_type(&AlphaType {
             name: fn_t_name,
             supertype: any_s,
