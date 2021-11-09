@@ -33,10 +33,7 @@ impl AlphaType {
                     .map(|f| {
                         (
                             f.name,
-                            f.typ
-                                .and_then(|s| types.lookup(s))
-                                .cloned()
-                                .expect("non-typed fields are not currently supported"),
+                            types.lookup(f.typ).cloned().expect("unable to lookup type"),
                         )
                     })
                     .collect::<Vec<_>>();

@@ -618,7 +618,6 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_module(module)?;
         let instance = self.jit.lookup::<GenericFn>(instance_fn_name)?;
 
-        let any_s = self.interner.intern("Any");
         self.add_method(
             fn_t,
             Method {
@@ -627,10 +626,9 @@ impl<'ctx> ExecutionSession<'ctx> {
                     .params
                     .iter()
                     .map(|p| {
-                        let type_s = p.typ.unwrap_or(any_s);
-                        let llvm_name = match self.global_env.lookup(type_s) {
+                        let llvm_name = match self.global_env.lookup(p.typ) {
                             Some(EnvValue::Global(s)) => s,
-                            _ => panic!("unable to lookup: {:?}", type_s),
+                            _ => panic!("unable to lookup: {:?}", p.typ),
                         };
                         unsafe {
                             *self
@@ -718,7 +716,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             prototype: exp::FunctionPrototype {
                 name: self.interner.intern("*anonymous*"),
                 params: vec![],
-                result_type: None,
+                result_type: self.interner.intern("Any"),
             },
             body: Some(Box::new(e)),
         };
