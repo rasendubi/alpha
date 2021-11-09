@@ -28,6 +28,7 @@ type AnyPtr = *const u64;
 type GenericFn = unsafe extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr;
 
 // type DataType = { size: i64, n_ptrs: i64, methods: i64 }
+#[derive(Debug)]
 #[repr(C)]
 struct DataType {
     size: u64,
@@ -77,6 +78,28 @@ unsafe fn type_of(x: AnyPtr) -> AnyPtr {
 unsafe extern "C" fn alpha_type_of(_this: AnyPtr, _n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let x = *args.add(0);
     type_of(x)
+}
+
+unsafe extern "C" fn alpha_print_i64(_this: AnyPtr, _n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let x = *(*args.add(0) as *const i64);
+    println!("{}", x);
+    std::ptr::null()
+}
+
+unsafe extern "C" fn alpha_print_f64(_this: AnyPtr, _n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let x = *(*args.add(0) as *const f64);
+    println!("{}", x);
+    std::ptr::null()
+}
+
+unsafe extern "C" fn alpha_print_datatype(
+    _this: AnyPtr,
+    _n_args: i64,
+    args: *const AnyPtr,
+) -> AnyPtr {
+    let x = &*(*args.add(0) as *const DataType);
+    println!("{:?}", x);
+    std::ptr::null()
 }
 
 unsafe extern "C" fn dispatch(f: AnyPtr, n_args: i64, args: *const AnyPtr) -> AnyPtr {
@@ -399,6 +422,30 @@ impl<'ctx> ExecutionSession<'ctx> {
             Method {
                 signature: vec![i64_t, i64_t],
                 instance: self.jit.lookup::<GenericFn>("i64_mul")?,
+            },
+        );
+
+        let print_s = self.interner.intern("print");
+        let print_t = self.define_function(print_s)?;
+        self.add_method(
+            print_t,
+            Method {
+                signature: vec![i64_t],
+                instance: alpha_print_i64,
+            },
+        );
+        self.add_method(
+            print_t,
+            Method {
+                signature: vec![f64_t],
+                instance: alpha_print_f64,
+            },
+        );
+        self.add_method(
+            print_t,
+            Method {
+                signature: vec![datatype],
+                instance: alpha_print_datatype,
             },
         );
 
