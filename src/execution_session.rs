@@ -13,7 +13,7 @@ use crate::exp;
 use crate::exp::{lower_sexp, Exp};
 use crate::gc::Gc;
 use crate::parser::Parser;
-use crate::symbol::SymbolInterner;
+use crate::symbol::{Symbol, SymbolInterner};
 use crate::types::{AlphaType, AlphaTypeDef};
 
 thread_local! {
@@ -25,6 +25,26 @@ unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
 }
 
 type AnyPtr = *const u64;
+type GenericFn = unsafe extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr;
+
+// type DataType = { size: i64, n_ptrs: i64, methods: i64 }
+#[repr(C)]
+struct DataType {
+    size: u64,
+    n_ptrs: u64,
+    methods: Option<GenericFn>,
+}
+
+#[cfg(test)]
+#[test]
+fn test_datatype_size() {
+    assert_eq!(std::mem::size_of::<DataType>(), 24);
+}
+
+// struct Methods {
+//     /// Compiled instance of the method.
+//     instance: Option<GenericFn>,
+// }
 
 unsafe fn dump_value(name: &str, value: AnyPtr) {
     println!("{} @ {:#?}", name, value);
@@ -36,9 +56,13 @@ unsafe fn dump_value(name: &str, value: AnyPtr) {
     }
 }
 
-unsafe fn set_typetag<T>(ptr: *mut T, typetag: *const ()) {
-    let typetag_ptr = (ptr as *mut u64).sub(1) as *mut *const ();
+unsafe fn set_typetag<T>(ptr: *mut T, typetag: *const DataType) {
+    let typetag_ptr = (ptr as *mut u64).sub(1) as *mut *const DataType;
     *typetag_ptr = typetag;
+}
+unsafe fn get_typetag<T>(ptr: *const T) -> *const DataType {
+    let typetag_ptr = (ptr as *mut u64).sub(1) as *mut *const DataType;
+    *typetag_ptr
 }
 
 unsafe fn type_of(x: AnyPtr) -> AnyPtr {
@@ -53,9 +77,10 @@ unsafe extern "C" fn alpha_type_of(_this: AnyPtr, _n_args: i64, args: *const Any
 }
 
 unsafe extern "C" fn dispatch(f: AnyPtr, n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let f_fn: unsafe extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr =
-        std::mem::transmute_copy(&f);
-    f_fn(f, n_args, args)
+    println!("dispatch: {:p} {}", f, n_args);
+    let typetag = get_typetag(f);
+    // let f_fn: GenericFn = std::mem::transmute_copy(&f);
+    ((*typetag).methods.unwrap())(f, n_args, args)
 }
 
 // TODO: generating all primitive operations as IR from Rust code might be easier to implement (less
@@ -122,7 +147,6 @@ const STDLIB_LL: &str = r#"
 
 pub enum EnvValue {
     Global(String),
-    Function(String),
     Local(Value),
 }
 
@@ -253,6 +277,14 @@ impl<'ctx> ExecutionSession<'ctx> {
                             typedef: AlphaTypeDef::Int(64),
                         },
                     ),
+                    (
+                        self.interner.intern("methods"),
+                        AlphaType {
+                            // actually: pointer to compiled function
+                            name: self.interner.intern("i64"),
+                            typedef: AlphaTypeDef::Int(64),
+                        },
+                    ),
                 ],
             },
         };
@@ -280,34 +312,22 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.globals.add_function("dispatch", fn_t);
         self.jit.define_symbol("dispatch", dispatch as usize)?;
 
-        // assumed: type DataType = { size: i64, n_ptrs: i64 }
-        // so that: let DataType = DataType { size: 16, n_ptrs: 16 }
         let datatype = unsafe {
-            let datatype = gc_allocate(16) as *mut u64;
+            let datatype = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
             // Type is self-referencial:
             // typeof(DataType) == DataType
-            set_typetag(datatype, datatype as *const ());
-            *datatype.add(0) = 16;
-            *datatype.add(1) = 0;
+            set_typetag(datatype, datatype);
+            *datatype = DataType {
+                size: 24,
+                n_ptrs: 0,
+                methods: None,
+            };
             datatype
         };
-        self.globals
-            .add_global("DataType", datatype_ptr_t)
-            .global_set_initializer(
-                i64_t
-                    .const_int(datatype as u64, false)
-                    .const_int_to_pointer(datatype_ptr_t),
-            );
+        self.inject_global(&self.globals, "DataType", datatype_ptr_t, datatype);
         self.global_env.insert(
             self.interner.intern("DataType"),
             EnvValue::Global("DataType".to_string()),
-        );
-
-        let type_of_ = self.globals.add_function("type_of", fn_t);
-        self.jit.define_symbol("type_of", alpha_type_of as usize)?;
-        self.global_env.insert(
-            self.interner.intern("type_of"),
-            EnvValue::Function(type_of_.get_name().to_string()),
         );
 
         // Add a copy of the globals module to jit, so globals with initializers are defined.
@@ -327,18 +347,15 @@ impl<'ctx> ExecutionSession<'ctx> {
         t.dump_to_stderr();
         eprintln!();
 
+        let type_of_s = self.interner.intern("type_of");
+        self.define_function(type_of_s, alpha_type_of)?;
+
         // stdlib.ll defines primitive operations
         self.load_ir_module("stdlib.ll", STDLIB_LL)?;
-        self.globals.add_function("f64_mul", fn_t);
-        self.global_env.insert(
-            self.interner.intern("f64_mul"),
-            EnvValue::Function("f64_mul".to_string()),
-        );
-        self.globals.add_function("i64_mul", fn_t);
-        self.global_env.insert(
-            self.interner.intern("i64_mul"),
-            EnvValue::Function("i64_mul".to_string()),
-        );
+        let f64_mul_s = self.interner.intern("f64_mul");
+        self.define_function(f64_mul_s, self.jit.lookup::<GenericFn>("f64_mul")?)?;
+        let i64_mul_s = self.interner.intern("i64_mul");
+        self.define_function(i64_mul_s, self.jit.lookup::<GenericFn>("i64_mul")?)?;
 
         self.eval(
             r#"
@@ -350,6 +367,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     pub fn eval(&mut self, s: &str) -> Result<(), Box<dyn Error>> {
+        println!("eval: {}", s);
         let mut parser = Parser::new(s);
         while parser.has_input() {
             let sexp = parser.parse()?;
@@ -369,15 +387,16 @@ impl<'ctx> ExecutionSession<'ctx> {
         match exp {
             Exp::Type(t) => {
                 let alpha_type = AlphaType::from_exp(&t, &self.types)?;
-                self.eval_type(&alpha_type)
+                self.eval_type(&alpha_type)?;
             }
-            Exp::Function(f) => self.eval_function_definition(f),
-            e => self.eval_anonymous_expression(e),
+            Exp::Function(f) => self.eval_function_definition(f)?,
+            e => self.eval_anonymous_expression(e)?,
         }
+        Ok(())
     }
 
     // Build a global type binding and initialize it. This does not execute any code inside the JIT.
-    fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<(), Box<dyn Error>> {
+    fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<*mut DataType, Box<dyn Error>> {
         println!("type lowered to {:?}", alpha_type);
 
         let type_size = alpha_type
@@ -389,15 +408,15 @@ impl<'ctx> ExecutionSession<'ctx> {
             .n_ptrs()
             .expect("abstract types are not supported yet");
 
-        // assumed: type DataType = { size: i64, n_ptrs: i64 }
-        // so that: let DataType = DataType { size: 16, n_ptrs: 0 }
-        let datatype_t = self.jit.lookup::<*const *const ()>("DataType")?;
+        let datatype_t = self.jit.lookup::<*const *const DataType>("DataType")?;
         let type_ptr = unsafe {
-            let type_ptr = gc_allocate(8) as *mut u64;
+            let type_ptr = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
             set_typetag(type_ptr, *datatype_t);
-            *type_ptr.add(0) = type_size as u64;
-            *type_ptr.add(1) = n_ptrs as u64;
-
+            *type_ptr = DataType {
+                size: type_size as u64,
+                n_ptrs: n_ptrs as u64,
+                methods: None,
+            };
             type_ptr
         };
 
@@ -423,13 +442,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             .get_named_struct("DataType")
             .unwrap()
             .pointer_type(AddressSpace::Generic);
-        let i64_t = self.context.context().int_type(64);
-        let type_global = module.add_global(name, ptr_t);
-        type_global.global_set_initializer(
-            i64_t
-                .const_int(type_ptr as u64, false)
-                .const_int_to_pointer(ptr_t),
-        );
+        self.inject_global(&module, name, ptr_t, type_ptr);
 
         self.globals.add_global(name, ptr_t); // without initializer here
         self.global_env
@@ -438,7 +451,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         self.load_module(module)?;
 
-        Ok(())
+        Ok(type_ptr)
     }
 
     fn build_type_specifier(&mut self, type_: &AlphaType) -> Result<Type, Box<dyn Error>> {
@@ -490,24 +503,67 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     fn eval_function_definition(&mut self, def: exp::Function) -> Result<(), Box<dyn Error>> {
-        let module = self.new_module("user");
+        let name = self
+            .interner
+            .resolve(def.prototype.name)
+            .unwrap()
+            .to_string();
 
-        let f = Compiler::compile(
+        // compile method
+        let module = self.new_module(&(name.clone() + "_instance"));
+        let instance = Compiler::compile(
             &mut self.interner,
             self.context.context(),
             &module,
             &self.global_env,
             &def,
         )?;
+        let instance_fn_name = instance.get_name();
+        self.load_module(module)?;
+        let method = self.jit.lookup::<GenericFn>(instance_fn_name)?;
 
-        let name = f.get_name();
+        self.define_function(def.prototype.name, method)?;
 
+        Ok(())
+    }
+
+    fn define_function(
+        &mut self,
+        symbol: Symbol,
+        instance: GenericFn,
+    ) -> Result<(), Box<dyn Error>> {
+        let name = self.interner.resolve(symbol).unwrap().to_string();
+
+        // define function type
+        let fn_t_name = self.interner.intern(&(name.clone() + "_t"));
+        let fn_t = self.eval_type(&AlphaType {
+            name: fn_t_name,
+            typedef: AlphaTypeDef::Struct { fields: Vec::new() },
+        })?;
+
+        // add method
+        unsafe {
+            (*fn_t).methods = Some(instance);
+        }
+
+        // allocate function object
+        let f = unsafe {
+            let f = gc_allocate(0);
+            set_typetag(f, fn_t);
+            f
+        };
+        let module = self.new_module(&(name.clone() + "_fn_object"));
+        let any_ptr_t = self
+            .context
+            .context()
+            .get_named_struct("Any")
+            .unwrap()
+            .pointer_type(AddressSpace::Generic);
+        let f_global = self.inject_global(&module, &("fn_".to_string() + &name), any_ptr_t, f);
+        let f_global_name = f_global.get_name();
         self.global_env
-            .insert(def.prototype.name, EnvValue::Function(name.to_string()));
-
+            .insert(symbol, EnvValue::Global(f_global_name.to_string()));
         self.save_global_declarations(&module);
-        self.save_function_declarations(&module);
-
         self.load_module(module)?;
 
         Ok(())
@@ -564,12 +620,15 @@ impl<'ctx> ExecutionSession<'ctx> {
         }
     }
 
-    fn save_function_declarations(&mut self, module: &Module) {
-        for v in module.functions() {
-            if self.globals.get_function(v.get_name()).is_none() {
-                self.globals
-                    .add_function(v.get_name(), v.get_type().element_type());
-            }
-        }
+    /// Add a global named `name` to the `module` and set initializer to point to `value`.
+    fn inject_global<T>(&self, module: &Module, name: &str, typ: Type, value: *const T) -> Value {
+        let i64_t = self.context.context().int_type(64);
+        let global = module.add_global(name, typ);
+        global.global_set_initializer(
+            i64_t
+                .const_int(value as u64, false)
+                .const_int_to_pointer(typ),
+        );
+        global
     }
 }

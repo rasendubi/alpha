@@ -221,7 +221,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                         &(name.to_string() + "_any"),
                     )
                 }
-                Some(EnvValue::Function(name)) => self.module.get_function(name).unwrap(),
                 None => {
                     bail!(
                         "unable to find binding for {}",
