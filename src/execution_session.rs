@@ -37,26 +37,15 @@ struct DataType {
     supertype: *const AbstractType,
     size: u64,
     n_ptrs: u64,
-    methods: *mut Vec<Method>,
+    methods: Vec<Method>,
+    name: String,
 }
 
 #[derive(Debug)]
 #[repr(C)]
 struct AbstractType {
     supertype: *const AbstractType,
-}
-
-#[cfg(test)]
-#[test]
-fn test_datatype_size() {
-    // the size should match size 3 cells exactly
-    assert_eq!(std::mem::size_of::<DataType>(), 24);
-}
-
-#[cfg(test)]
-#[test]
-fn test_abstracttype_size() {
-    assert_eq!(std::mem::size_of::<AbstractType>(), 0);
+    name: String,
 }
 
 #[derive(Debug)]
@@ -429,13 +418,19 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         let any = unsafe {
             let any = gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType;
-            *any = AbstractType { supertype: any };
+            *any = AbstractType {
+                supertype: any,
+                name: "Any".to_string(),
+            };
             any
         };
         let type_ = unsafe {
             let type_ =
                 gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType;
-            *type_ = AbstractType { supertype: any };
+            *type_ = AbstractType {
+                supertype: any,
+                name: "Type".to_string(),
+            };
             type_
         };
 
@@ -448,7 +443,8 @@ impl<'ctx> ExecutionSession<'ctx> {
                 supertype: type_,
                 size: std::mem::size_of::<DataType>() as u64,
                 n_ptrs: 0,
-                methods: Box::into_raw(Box::new(Vec::new())),
+                methods: Vec::new(),
+                name: "DataType".to_string(),
             };
             datatype
         };
@@ -465,7 +461,8 @@ impl<'ctx> ExecutionSession<'ctx> {
                 supertype: type_,
                 size: std::mem::size_of::<AbstractType>() as u64,
                 n_ptrs: 0,
-                methods: Box::into_raw(Box::new(Vec::new())),
+                methods: Vec::new(),
+                name: "AbstractType".to_string(),
             };
             abstracttype
         };
@@ -619,6 +616,9 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<AnyPtrMut, Box<dyn Error>> {
         println!("type lowered to {:?}", alpha_type);
 
+        let name = self.interner.resolve(alpha_type.name).unwrap().to_string();
+        let module = self.context.context().create_module(&name);
+
         let supertype_t = self
             .global_env
             .lookup(alpha_type.supertype)
@@ -632,7 +632,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             .jit
             .lookup::<*const *const AbstractType>(supertype_t.as_global())?;
 
-        if alpha_type.typedef == AlphaTypeDef::Abstract {
+        let type_ptr = if alpha_type.typedef == AlphaTypeDef::Abstract {
             // TODO: verify the type is abstract
             let abstracttype_t = self.jit.lookup::<*const *const DataType>("AbstractType")?;
             let type_ptr = unsafe {
@@ -641,78 +641,66 @@ impl<'ctx> ExecutionSession<'ctx> {
                 set_typetag(type_ptr, *abstracttype_t);
                 *type_ptr = AbstractType {
                     supertype: *supertype_ptr,
+                    name: name.to_string(),
                 };
                 type_ptr
             };
 
-            let name = self.interner.resolve(alpha_type.name).unwrap();
-            let module = self.context.context().create_module(name);
+            type_ptr as AnyPtrMut
+        } else {
+            let type_size = alpha_type
+                .typedef
+                .size()
+                .expect("unsized types are not supported yet");
+            let n_ptrs = alpha_type
+                .typedef
+                .n_ptrs()
+                .expect("abstract types are not supported yet");
 
-            let ptr_t = self
-                .context
-                .context()
-                .get_named_struct("AbstractType")
-                .unwrap()
-                .pointer_type(AddressSpace::Generic);
-            self.inject_global(&module, name, ptr_t, type_ptr);
-
-            self.globals.add_global(name, ptr_t); // without initializer here
-            self.global_env
-                .insert(alpha_type.name, EnvValue::Global(name.to_string()));
-            self.types.insert(alpha_type.name, alpha_type.clone());
-
-            self.load_module(module)?;
-
-            return Ok(type_ptr as AnyPtrMut);
-        }
-
-        let type_size = alpha_type
-            .typedef
-            .size()
-            .expect("unsized types are not supported yet");
-        let n_ptrs = alpha_type
-            .typedef
-            .n_ptrs()
-            .expect("abstract types are not supported yet");
-
-        let datatype_t = self.jit.lookup::<*const *const DataType>("DataType")?;
-        let type_ptr = unsafe {
-            let type_ptr = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
-            set_typetag(type_ptr, *datatype_t);
-            *type_ptr = DataType {
-                supertype: *supertype_ptr,
-                size: type_size as u64,
-                n_ptrs: n_ptrs as u64,
-                methods: Box::into_raw(Box::new(Vec::new())),
+            let datatype_t = self.jit.lookup::<*const *const DataType>("DataType")?;
+            let type_ptr = unsafe {
+                let type_ptr = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
+                set_typetag(type_ptr, *datatype_t);
+                *type_ptr = DataType {
+                    supertype: *supertype_ptr,
+                    size: type_size as u64,
+                    n_ptrs: n_ptrs as u64,
+                    methods: Vec::new(),
+                    name: name.to_string(),
+                };
+                type_ptr
             };
-            type_ptr
+
+            let t = self.build_type_specifier(&alpha_type)?;
+            eprint!("defined type: ");
+            t.dump_to_stderr();
+            eprint!(
+                " size={}, n_ptrs={}, is_inlinable={}, has_ptrs={}, is_ptr={}",
+                type_size,
+                n_ptrs,
+                alpha_type.typedef.is_inlinable(),
+                alpha_type.typedef.has_ptrs(),
+                alpha_type.typedef.is_ptr(),
+            );
+            eprintln!();
+
+            type_ptr as AnyPtrMut
         };
-
-        let t = self.build_type_specifier(&alpha_type)?;
-        eprint!("defined type: ");
-        t.dump_to_stderr();
-        eprint!(
-            " size={}, n_ptrs={}, is_inlinable={}, has_ptrs={}, is_ptr={}",
-            type_size,
-            n_ptrs,
-            alpha_type.typedef.is_inlinable(),
-            alpha_type.typedef.has_ptrs(),
-            alpha_type.typedef.is_ptr(),
-        );
-        eprintln!();
-
-        let name = self.interner.resolve(alpha_type.name).unwrap();
-        let module = self.context.context().create_module(name);
 
         let ptr_t = self
             .context
             .context()
-            .get_named_struct("DataType")
+            .get_named_struct(if alpha_type.typedef == AlphaTypeDef::Abstract {
+                "AbstractType"
+            } else {
+                "DataType"
+            })
             .unwrap()
             .pointer_type(AddressSpace::Generic);
-        self.inject_global(&module, name, ptr_t, type_ptr);
 
-        self.globals.add_global(name, ptr_t); // without initializer here
+        self.inject_global(&module, &name, ptr_t, type_ptr);
+
+        self.globals.add_global(&name, ptr_t); // without initializer here
         self.global_env
             .insert(alpha_type.name, EnvValue::Global(name.to_string()));
         self.types.insert(alpha_type.name, alpha_type.clone());
@@ -895,7 +883,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
     fn add_method(&mut self, fn_t: *mut DataType, method: Method) {
         unsafe {
-            (*(*fn_t).methods).push(method);
+            (*fn_t).methods.push(method);
         }
     }
 
