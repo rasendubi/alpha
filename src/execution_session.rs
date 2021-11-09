@@ -32,19 +32,22 @@ type GenericFn = unsafe extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr;
 struct DataType {
     size: u64,
     n_ptrs: u64,
-    methods: Option<GenericFn>,
+    methods: *mut Vec<Method>,
 }
 
 #[cfg(test)]
 #[test]
 fn test_datatype_size() {
+    // the size should match size 3 cells exactly
     assert_eq!(std::mem::size_of::<DataType>(), 24);
 }
 
-// struct Methods {
-//     /// Compiled instance of the method.
-//     instance: Option<GenericFn>,
-// }
+#[derive(Debug)]
+struct Method {
+    signature: Vec<*const DataType>,
+    // compiled instance of the method
+    instance: GenericFn,
+}
 
 unsafe fn dump_value(name: &str, value: AnyPtr) {
     println!("{} @ {:#?}", name, value);
@@ -79,8 +82,23 @@ unsafe extern "C" fn alpha_type_of(_this: AnyPtr, _n_args: i64, args: *const Any
 unsafe extern "C" fn dispatch(f: AnyPtr, n_args: i64, args: *const AnyPtr) -> AnyPtr {
     println!("dispatch: {:p} {}", f, n_args);
     let typetag = get_typetag(f);
-    // let f_fn: GenericFn = std::mem::transmute_copy(&f);
-    ((*typetag).methods.unwrap())(f, n_args, args)
+    let methods = &*(*typetag).methods;
+
+    let args_slice = std::slice::from_raw_parts(args, n_args as usize);
+    let signature = args_slice
+        .iter()
+        .map(|a| type_of(*a) as *const DataType)
+        .collect::<Vec<_>>();
+
+    for method in methods {
+        if signature == method.signature {
+            return (method.instance)(f, n_args, args);
+        }
+    }
+
+    eprintln!("unable to find matching method: {:?}", signature);
+    eprintln!("available methods: {:?}", methods);
+    panic!("unable to find matching method");
 }
 
 // TODO: generating all primitive operations as IR from Rust code might be easier to implement (less
@@ -151,8 +169,10 @@ pub enum EnvValue {
 }
 
 pub struct ExecutionSession<'ctx> {
-    // A module that contains global declarations to be copied into each new module. The module
-    // itself is never passed into JIT.
+    /// A global counter to make function names unique.
+    counter: usize,
+    /// A module that contains global declarations to be copied into each new module. The module
+    /// itself is never passed into JIT.
     globals: Module,
     jit: LLJIT,
     interner: SymbolInterner,
@@ -183,6 +203,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let types = Env::new(None);
 
         let mut es = ExecutionSession {
+            counter: 0,
             context,
             interner,
             global_env,
@@ -280,7 +301,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                     (
                         self.interner.intern("methods"),
                         AlphaType {
-                            // actually: pointer to compiled function
+                            // actually: pointer to Vec<Method>
                             name: self.interner.intern("i64"),
                             typedef: AlphaTypeDef::Int(64),
                         },
@@ -320,7 +341,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             *datatype = DataType {
                 size: 24,
                 n_ptrs: 0,
-                methods: None,
+                methods: Box::into_raw(Box::new(Vec::new())),
             };
             datatype
         };
@@ -347,19 +368,44 @@ impl<'ctx> ExecutionSession<'ctx> {
         t.dump_to_stderr();
         eprintln!();
 
+        let i64_t = unsafe { *self.jit.lookup::<*const *const DataType>("i64")? };
+        let f64_t = unsafe { *self.jit.lookup::<*const *const DataType>("f64")? };
+
         let type_of_s = self.interner.intern("type_of");
-        self.define_function(type_of_s, alpha_type_of)?;
+        // TODO: support generic methods
+        // self.add_method(
+        //     self.define_function(type_of_s)?,
+        //     Method {
+        //         signature: vec![any_t],
+        //         instance: alpha_type_of,
+        //     },
+        // );
 
         // stdlib.ll defines primitive operations
         self.load_ir_module("stdlib.ll", STDLIB_LL)?;
         let f64_mul_s = self.interner.intern("f64_mul");
-        self.define_function(f64_mul_s, self.jit.lookup::<GenericFn>("f64_mul")?)?;
+        let f64_mul_t = self.define_function(f64_mul_s)?;
+        self.add_method(
+            f64_mul_t,
+            Method {
+                signature: vec![f64_t, f64_t],
+                instance: self.jit.lookup::<GenericFn>("f64_mul")?,
+            },
+        );
         let i64_mul_s = self.interner.intern("i64_mul");
-        self.define_function(i64_mul_s, self.jit.lookup::<GenericFn>("i64_mul")?)?;
+        let i64_mul_t = self.define_function(i64_mul_s)?;
+        self.add_method(
+            i64_mul_t,
+            Method {
+                signature: vec![i64_t, i64_t],
+                instance: self.jit.lookup::<GenericFn>("i64_mul")?,
+            },
+        );
 
         self.eval(
             r#"
               fn *(x: f64, y: f64) = f64_mul(x, y)
+              fn *(x: i64, y: i64) = i64_mul(x, y)
             "#,
         )?;
 
@@ -415,7 +461,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             *type_ptr = DataType {
                 size: type_size as u64,
                 n_ptrs: n_ptrs as u64,
-                methods: None,
+                methods: Box::into_raw(Box::new(Vec::new())),
             };
             type_ptr
         };
@@ -502,15 +548,18 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(t)
     }
 
-    fn eval_function_definition(&mut self, def: exp::Function) -> Result<(), Box<dyn Error>> {
-        let name = self
-            .interner
-            .resolve(def.prototype.name)
-            .unwrap()
-            .to_string();
+    fn eval_function_definition(&mut self, mut def: exp::Function) -> Result<(), Box<dyn Error>> {
+        let fn_name_s = def.prototype.name;
+        let fn_name = self.interner.resolve(fn_name_s).unwrap().to_string();
+        let method_name = format!("{}.method.{}", fn_name, self.next_counter());
+        let method_name_s = self.interner.intern(&method_name);
+
+        def.prototype.name = method_name_s;
+
+        let fn_t = self.ensure_function(fn_name_s)?;
 
         // compile method
-        let module = self.new_module(&(name.clone() + "_instance"));
+        let module = self.new_module(&method_name);
         let instance = Compiler::compile(
             &mut self.interner,
             self.context.context(),
@@ -520,31 +569,73 @@ impl<'ctx> ExecutionSession<'ctx> {
         )?;
         let instance_fn_name = instance.get_name();
         self.load_module(module)?;
-        let method = self.jit.lookup::<GenericFn>(instance_fn_name)?;
+        let instance = self.jit.lookup::<GenericFn>(instance_fn_name)?;
 
-        self.define_function(def.prototype.name, method)?;
+        let any_s = self.interner.intern("Any");
+        self.add_method(
+            fn_t,
+            Method {
+                signature: def
+                    .prototype
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let type_s = p.typ.unwrap_or(any_s);
+                        let llvm_name = match self.global_env.lookup(type_s) {
+                            Some(EnvValue::Global(s)) => s,
+                            _ => panic!("unable to lookup: {:?}", type_s),
+                        };
+                        unsafe {
+                            *self
+                                .jit
+                                .lookup::<*const *const DataType>(llvm_name)
+                                .unwrap()
+                        }
+                    })
+                    .collect(),
+                instance,
+            },
+        );
 
         Ok(())
     }
 
-    fn define_function(
-        &mut self,
-        symbol: Symbol,
-        instance: GenericFn,
-    ) -> Result<(), Box<dyn Error>> {
+    /// Ensure a function `name` is defined. Defines it if it does not exist.
+    fn ensure_function(&mut self, name: Symbol) -> Result<*mut DataType, Box<dyn Error>> {
+        match self.global_env.lookup(name) {
+            Some(EnvValue::Global(name)) => unsafe {
+                return Ok(type_of(*self.jit.lookup::<*const AnyPtr>(name)?) as *mut DataType);
+            },
+            _ => {}
+        }
+
+        self.define_function(name)
+    }
+
+    fn define_function(&mut self, symbol: Symbol) -> Result<*mut DataType, Box<dyn Error>> {
         let name = self.interner.resolve(symbol).unwrap().to_string();
 
-        // define function type
-        let fn_t_name = self.interner.intern(&(name.clone() + "_t"));
+        let fn_t = self.define_function_type(&name)?;
+        self.define_function_object(symbol, fn_t)?;
+
+        Ok(fn_t)
+    }
+
+    fn define_function_type(&mut self, fn_name: &str) -> Result<*mut DataType, Box<dyn Error>> {
+        let fn_t_name = self.interner.intern(&(fn_name.to_string() + "_t"));
         let fn_t = self.eval_type(&AlphaType {
             name: fn_t_name,
             typedef: AlphaTypeDef::Struct { fields: Vec::new() },
         })?;
+        Ok(fn_t)
+    }
 
-        // add method
-        unsafe {
-            (*fn_t).methods = Some(instance);
-        }
+    fn define_function_object(
+        &mut self,
+        symbol: Symbol,
+        fn_t: *const DataType,
+    ) -> Result<(), Box<dyn Error>> {
+        let name = self.interner.resolve(symbol).unwrap();
 
         // allocate function object
         let f = unsafe {
@@ -552,7 +643,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             set_typetag(f, fn_t);
             f
         };
-        let module = self.new_module(&(name.clone() + "_fn_object"));
+        let module = self.new_module(&(name.to_string() + "_fn_object"));
         let any_ptr_t = self
             .context
             .context()
@@ -567,6 +658,12 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_module(module)?;
 
         Ok(())
+    }
+
+    fn add_method(&mut self, fn_t: *mut DataType, method: Method) {
+        unsafe {
+            (*(*fn_t).methods).push(method);
+        }
     }
 
     fn eval_anonymous_expression(&mut self, e: Exp) -> Result<(), Box<dyn Error>> {
@@ -596,9 +693,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         // we don't need to save it.
 
         let tracker = self.load_module_with_tracker(module)?;
-        let fun = self
-            .jit
-            .lookup::<extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr>(&name)?;
+        let fun = self.jit.lookup::<GenericFn>(&name)?;
         unsafe {
             let result = fun(std::ptr::null(), 0, std::ptr::null());
             dump_value("result", result);
@@ -630,5 +725,10 @@ impl<'ctx> ExecutionSession<'ctx> {
                 .const_int_to_pointer(typ),
         );
         global
+    }
+
+    fn next_counter(&mut self) -> usize {
+        self.counter += 1;
+        self.counter
     }
 }
