@@ -9,12 +9,33 @@ mod sexp;
 mod symbol;
 mod types;
 
+use rustyline::validate::{
+    MatchingBracketValidator, ValidationContext, ValidationResult, Validator,
+};
+use rustyline::{Editor, Result};
+use rustyline_derive::{Completer, Helper, Highlighter, Hinter};
+
 use crate::execution_session::ExecutionSession;
+
+#[derive(Completer, Helper, Highlighter, Hinter)]
+struct InputValidator {
+    brackets: MatchingBracketValidator,
+}
+
+impl Validator for InputValidator {
+    fn validate(&self, ctx: &mut ValidationContext) -> Result<ValidationResult> {
+        self.brackets.validate(ctx)
+    }
+}
 
 const HISTORY_FILE: &str = "history.txt";
 
 fn main() {
-    let mut rl = rustyline::Editor::<()>::new();
+    let h = InputValidator {
+        brackets: MatchingBracketValidator::new(),
+    };
+    let mut rl = Editor::<InputValidator>::new();
+    rl.set_helper(Some(h));
     let _ = rl.load_history(HISTORY_FILE);
 
     let mut es = ExecutionSession::new();
