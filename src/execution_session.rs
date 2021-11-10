@@ -28,7 +28,7 @@ unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
 
 type AnyPtr = *const u64;
 type AnyPtrMut = *mut u64;
-type GenericFn = unsafe extern "C" fn(AnyPtr, i64, *const AnyPtr) -> AnyPtr;
+type GenericFn = unsafe extern "C" fn(i64, *const AnyPtr) -> AnyPtr;
 
 // type DataType = { size: i64, n_ptrs: i64, methods: i64 }
 #[derive(Debug)]
@@ -49,33 +49,43 @@ struct AbstractType {
 }
 
 #[derive(Debug)]
+enum ParamSpecifier {
+    Eq(AnyPtr),
+    SubtypeOf(AnyPtr),
+}
+
+#[derive(Debug)]
 struct Method {
-    signature: Vec<AnyPtr>,
+    signature: Vec<ParamSpecifier>,
     // compiled instance of the method
     instance: GenericFn,
 }
 
 impl Method {
-    fn is_subtype_of(&self, other: &Self) -> bool {
-        let collect_cpls = |x: &Self| {
-            x.signature
-                .iter()
-                .map(|x| unsafe {
-                    get_cpl(
-                        // this is a very dangerous unsafe transmute of possibly *const AbstractType to *const
-                        // DataType. It should be fine as long as both start with supertype.
-                        *x as *const DataType,
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        let a_cpls = collect_cpls(self);
-        let b_cpls = collect_cpls(other);
+    fn is_applicable(&self, args: &[AnyPtr]) -> bool {
+        if self.signature.len() != args.len() {
+            return false;
+        }
 
+        for (v, spec) in args.iter().zip(self.signature.iter()) {
+            if !spec.is_applicable(*v) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn is_subtype_of(&self, other: &Self) -> bool {
         // find an element that is strictly more specific
         let mut subtype_index = None;
-        for (i, (a, b)) in a_cpls.iter().zip(b_cpls.iter()).enumerate() {
-            if a.contains(&b[0]) {
+        for (i, (a, b)) in self
+            .signature
+            .iter()
+            .zip(other.signature.iter())
+            .enumerate()
+        {
+            if a.is_more_specific_than(b) {
                 subtype_index = Some(i);
                 break;
             }
@@ -86,16 +96,48 @@ impl Method {
             None => return false,
         };
 
-        // all other elements should not be less specific
-        for (i, (a, b)) in a_cpls.iter().zip(b_cpls.iter()).enumerate() {
+        // all other elements should have more or equal specificity
+        for (i, (a, b)) in self
+            .signature
+            .iter()
+            .zip(other.signature.iter())
+            .enumerate()
+        {
             if i != subtype_index {
-                if b[1..].contains(&a[0]) {
+                if b.is_more_specific_than(a) {
                     return false;
                 }
             }
         }
 
         true
+    }
+}
+
+impl ParamSpecifier {
+    fn is_applicable(&self, v: AnyPtr) -> bool {
+        match self {
+            ParamSpecifier::Eq(x) => *x == v,
+            ParamSpecifier::SubtypeOf(t) => unsafe {
+                let cpls = get_cpl(type_of(v));
+                cpls.contains(t)
+            },
+        }
+    }
+
+    /// Returns `true` if self is more specific than `other`.
+    fn is_more_specific_than(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ParamSpecifier::Eq(_), _) => {
+                // might be not true, but good enough for the Method::is_subtype_of().
+                true
+            }
+            (_, ParamSpecifier::Eq(_)) => false,
+            (ParamSpecifier::SubtypeOf(a), ParamSpecifier::SubtypeOf(b)) => unsafe {
+                let a_cpls = get_cpl(*a as *const DataType);
+                a_cpls.contains(b)
+            },
+        }
     }
 }
 
@@ -144,64 +186,48 @@ unsafe fn get_cpl(t: *const DataType) -> Vec<AnyPtr> {
     cpl
 }
 
-unsafe extern "C" fn alpha_type_of(_this: AnyPtr, _n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let x = *args.add(0);
+unsafe extern "C" fn alpha_type_of(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let x = *args.add(1);
     type_of(x) as AnyPtr
 }
 
-unsafe extern "C" fn alpha_print_i64(_this: AnyPtr, _n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let x = *(*args.add(0) as *const i64);
+unsafe extern "C" fn alpha_print_i64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let x = *(*args.add(1) as *const i64);
     println!("{}", x);
     std::ptr::null()
 }
 
-unsafe extern "C" fn alpha_print_f64(_this: AnyPtr, _n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let x = *(*args.add(0) as *const f64);
+unsafe extern "C" fn alpha_print_f64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let x = *(*args.add(1) as *const f64);
     println!("{}", x);
     std::ptr::null()
 }
 
-unsafe extern "C" fn alpha_print_datatype(
-    _this: AnyPtr,
-    _n_args: i64,
-    args: *const AnyPtr,
-) -> AnyPtr {
-    let x = &*(*args.add(0) as *const DataType);
+unsafe extern "C" fn alpha_print_datatype(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let x = &*(*args.add(1) as *const DataType);
     println!("{:#?}", x);
     std::ptr::null()
 }
 
-unsafe extern "C" fn alpha_print_abstracttype(
-    _this: AnyPtr,
-    _n_args: i64,
-    args: *const AnyPtr,
-) -> AnyPtr {
-    let x = &*(*args.add(0) as *const AbstractType);
+unsafe extern "C" fn alpha_print_abstracttype(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let x = &*(*args.add(1) as *const AbstractType);
     println!("{:?}", x);
     std::ptr::null()
 }
 
-unsafe extern "C" fn dispatch(f: AnyPtr, n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    println!("dispatch: {:p} {}", f, n_args);
+unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let args_slice = std::slice::from_raw_parts(args, n_args as usize);
+    eprintln!("dispatch: {:?}", args_slice);
+
+    let f = args_slice[0];
+
     let typetag = get_typetag(f);
     let methods = &(*typetag).methods;
 
-    let args_slice = std::slice::from_raw_parts(args, n_args as usize);
-    let args_cpls = args_slice
-        .iter()
-        .map(|x| get_cpl(type_of(*x)))
-        .collect::<Vec<_>>();
-
     let mut selected_method: Option<&Method> = None;
-    'next: for method in methods {
-        if method.signature.len() != args_slice.len() {
-            continue 'next;
-        }
-
-        for (i, param) in method.signature.iter().enumerate() {
-            if !args_cpls[i].contains(param) {
-                continue 'next;
-            }
+    for method in methods {
+        if !method.is_applicable(args_slice) {
+            continue;
         }
 
         // this method is applicable
@@ -218,6 +244,10 @@ unsafe extern "C" fn dispatch(f: AnyPtr, n_args: i64, args: *const AnyPtr) -> An
                     method
                 } else {
                     // Both methods are applicable but neither is more specific — ambiguity.
+                    let args_cpls = args_slice
+                        .iter()
+                        .map(|x| get_cpl(type_of(*x)))
+                        .collect::<Vec<_>>();
                     let signature = args_slice.iter().map(|a| type_of(*a)).collect::<Vec<_>>();
                     eprintln!("ambiguity finding matching method for: {:?}", signature);
                     eprintln!("available methods: {:?}", methods);
@@ -229,8 +259,12 @@ unsafe extern "C" fn dispatch(f: AnyPtr, n_args: i64, args: *const AnyPtr) -> An
     }
 
     match selected_method {
-        Some(method) => (method.instance)(f, n_args, args),
+        Some(method) => (method.instance)(n_args, args),
         None => {
+            let args_cpls = args_slice
+                .iter()
+                .map(|x| get_cpl(type_of(*x)))
+                .collect::<Vec<_>>();
             let signature = args_slice.iter().map(|a| type_of(*a)).collect::<Vec<_>>();
             eprintln!("unable to find matching method: {:?}", signature);
             eprintln!("available methods: {:?}", methods);
@@ -259,11 +293,11 @@ const STDLIB_LL: &str = r#"
     ret %Any* %result_any
   }
 
-  define %Any* @f64_mul(%Any* %this, i64 %n_args, %Any** %args) {
+  define %Any* @f64_mul(i64 %n_args, %Any** %args) {
   entry:
-    %a_ptr = getelementptr %Any*, %Any** %args, i64 0
+    %a_ptr = getelementptr %Any*, %Any** %args, i64 1
     %a = load %Any*, %Any** %a_ptr, align 4
-    %b_ptr = getelementptr %Any*, %Any** %args, i64 1
+    %b_ptr = getelementptr %Any*, %Any** %args, i64 2
     %b = load %Any*, %Any** %b_ptr, align 4
 
     %f64_t = load %DataType*, %DataType** @f64
@@ -280,11 +314,11 @@ const STDLIB_LL: &str = r#"
     ret %Any* %result_any
   }
 
-  define %Any* @i64_mul(%Any* %this, i64 %n_args, %Any** %args) {
+  define %Any* @i64_mul(i64 %n_args, %Any** %args) {
   entry:
-    %a_ptr = getelementptr %Any*, %Any** %args, i64 0
+    %a_ptr = getelementptr %Any*, %Any** %args, i64 1
     %a = load %Any*, %Any** %a_ptr, align 4
-    %b_ptr = getelementptr %Any*, %Any** %args, i64 1
+    %b_ptr = getelementptr %Any*, %Any** %args, i64 2
     %b = load %Any*, %Any** %b_ptr, align 4
 
     %i64_t = load %DataType*, %DataType** @i64
@@ -500,7 +534,6 @@ impl<'ctx> ExecutionSession<'ctx> {
         let i64_t = self.context.context().int_type(64);
         let fn_t = any_ptr_t.function_type(
             &[
-                /* this: */ any_ptr_t,
                 /* n_args: */ i64_t,
                 /* args: */ any_ptr_t.pointer_type(AddressSpace::Generic),
             ],
@@ -614,10 +647,13 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         let type_of_s = self.interner.intern("type_of");
         let type_of_t = self.define_function(type_of_s)?;
-        self.add_method(
+        self.function_add_method(
             type_of_t,
             Method {
-                signature: vec![any as AnyPtr],
+                signature: vec![
+                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                ],
                 instance: alpha_type_of,
             },
         );
@@ -626,50 +662,70 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_ir_module("stdlib.ll", STDLIB_LL)?;
         let f64_mul_s = self.interner.intern("f64_mul");
         let f64_mul_t = self.define_function(f64_mul_s)?;
-        self.add_method(
+        self.function_add_method(
             f64_mul_t,
             Method {
-                signature: vec![f64_t as AnyPtr, f64_t as AnyPtr],
+                signature: vec![
+                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(f64_t as AnyPtr),
+                    ParamSpecifier::SubtypeOf(f64_t as AnyPtr),
+                ],
                 instance: self.jit.lookup::<GenericFn>("f64_mul")?,
             },
         );
         let i64_mul_s = self.interner.intern("i64_mul");
         let i64_mul_t = self.define_function(i64_mul_s)?;
-        self.add_method(
+        self.function_add_method(
             i64_mul_t,
             Method {
-                signature: vec![i64_t as AnyPtr, i64_t as AnyPtr],
+                signature: vec![
+                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(i64_t as AnyPtr),
+                    ParamSpecifier::SubtypeOf(i64_t as AnyPtr),
+                ],
                 instance: self.jit.lookup::<GenericFn>("i64_mul")?,
             },
         );
 
         let print_s = self.interner.intern("print");
         let print_t = self.define_function(print_s)?;
-        self.add_method(
+        self.function_add_method(
             print_t,
             Method {
-                signature: vec![i64_t as AnyPtr],
+                signature: vec![
+                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(i64_t as AnyPtr),
+                ],
                 instance: alpha_print_i64,
             },
         );
-        self.add_method(
+        self.function_add_method(
             print_t,
             Method {
-                signature: vec![f64_t as AnyPtr],
+                signature: vec![
+                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(f64_t as AnyPtr),
+                ],
                 instance: alpha_print_f64,
             },
         );
-        self.add_method(
+        self.function_add_method(
             print_t,
             Method {
-                signature: vec![datatype as AnyPtr],
+                signature: vec![
+                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(datatype as AnyPtr),
+                ],
                 instance: alpha_print_datatype,
             },
         );
-        self.add_method(
+        self.function_add_method(
             print_t,
             Method {
-                signature: vec![abstracttype as AnyPtr],
+                signature: vec![
+                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(abstracttype as AnyPtr),
+                ],
                 instance: alpha_print_abstracttype,
             },
         );
@@ -878,7 +934,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         def.prototype.name = method_name_s;
 
-        let fn_t = self.ensure_function(fn_name_s)?;
+        let fn_obj = self.ensure_function(fn_name_s)?;
 
         // compile method
         let module = self.new_module(&method_name);
@@ -893,20 +949,19 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_module(module)?;
         let instance = self.jit.lookup::<GenericFn>(instance_fn_name)?;
 
-        self.add_method(
-            fn_t,
+        self.function_add_method(
+            fn_obj,
             Method {
-                signature: def
-                    .prototype
-                    .params
-                    .iter()
-                    .map(|p| {
+                signature: std::iter::once(ParamSpecifier::Eq(fn_obj))
+                    .chain(def.prototype.params.iter().map(|p| {
                         let llvm_name = match self.global_env.lookup(p.typ) {
                             Some(EnvValue::Global(s)) => s,
                             _ => panic!("unable to lookup: {:?}", p.typ),
                         };
-                        unsafe { *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap() }
-                    })
+                        ParamSpecifier::SubtypeOf(unsafe {
+                            *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap()
+                        })
+                    }))
                     .collect(),
                 instance,
             },
@@ -916,10 +971,10 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     /// Ensure a function `name` is defined. Defines it if it does not exist.
-    fn ensure_function(&mut self, name: Symbol) -> Result<*mut DataType, Box<dyn Error>> {
+    fn ensure_function(&mut self, name: Symbol) -> Result<AnyPtr, Box<dyn Error>> {
         match self.global_env.lookup(name) {
             Some(EnvValue::Global(name)) => unsafe {
-                return Ok(type_of(*self.jit.lookup::<*const AnyPtr>(name)?) as *mut DataType);
+                return Ok(*self.jit.lookup::<*const AnyPtr>(name)?);
             },
             _ => {}
         }
@@ -927,13 +982,13 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.define_function(name)
     }
 
-    fn define_function(&mut self, symbol: Symbol) -> Result<*mut DataType, Box<dyn Error>> {
+    fn define_function(&mut self, symbol: Symbol) -> Result<AnyPtr, Box<dyn Error>> {
         let name = self.interner.resolve(symbol).unwrap().to_string();
 
         let fn_t = self.define_function_type(&name)?;
-        self.define_function_object(symbol, fn_t)?;
+        let fn_obj = self.define_function_object(symbol, fn_t)?;
 
-        Ok(fn_t)
+        Ok(fn_obj)
     }
 
     fn define_function_type(&mut self, fn_name: &str) -> Result<*mut DataType, Box<dyn Error>> {
@@ -951,7 +1006,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         &mut self,
         symbol: Symbol,
         fn_t: *const DataType,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<AnyPtr, Box<dyn Error>> {
         let name = self.interner.resolve(symbol).unwrap();
 
         // allocate function object
@@ -974,11 +1029,12 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.save_global_declarations(&module);
         self.load_module(module)?;
 
-        Ok(())
+        Ok(f as AnyPtr)
     }
 
-    fn add_method(&mut self, fn_t: *mut DataType, method: Method) {
+    fn function_add_method(&mut self, fn_obj: AnyPtr, method: Method) {
         unsafe {
+            let fn_t = type_of(fn_obj) as *mut DataType;
             (*fn_t).methods.push(method);
         }
     }
@@ -1012,7 +1068,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let tracker = self.load_module_with_tracker(module)?;
         let fun = self.jit.lookup::<GenericFn>(&name)?;
         unsafe {
-            let result = fun(std::ptr::null(), 0, std::ptr::null());
+            let result = fun(0, std::ptr::null());
             dump_value("result", result);
         }
 

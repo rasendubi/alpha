@@ -20,7 +20,10 @@ impl Gc {
     }
 
     pub unsafe fn init(&mut self) {
-        let block = alloc::alloc(alloc::Layout::from_size_align_unchecked(BLOCK_SIZE, BLOCK_ALIGN));
+        let block = alloc::alloc(alloc::Layout::from_size_align_unchecked(
+            BLOCK_SIZE,
+            BLOCK_ALIGN,
+        ));
         *self = Gc {
             start: block,
             end: block.add(BLOCK_SIZE),
@@ -36,7 +39,6 @@ impl Gc {
             me
         }
     }
-
 
     pub fn allocate(&mut self, size: usize) -> *mut u8 {
         unsafe {

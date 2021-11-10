@@ -146,7 +146,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
         let ret_type = ptr_t;
         let params_types = vec![
-            /* self: */ ptr_t,
             /* n_args: */ i64_t,
             /* args: */ ptr_t.pointer_type(AddressSpace::Generic),
         ];
@@ -164,11 +163,9 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         fn_val: Value,
     ) -> Result<Env<'e, EnvValue>, Box<dyn Error>> {
         let mut params = fn_val.get_param_iter();
-        let this = params.next().unwrap();
         let n_args = params.next().unwrap();
         let args = params.next().unwrap();
 
-        this.set_name("this");
         n_args.set_name("n_args");
         args.set_name("args");
 
@@ -189,9 +186,9 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         for (i, param) in proto.params.iter().enumerate() {
             let param_symbol = param.name;
             let param_name = self.interner.resolve(param_symbol).unwrap();
-            let p = self
-                .builder
-                .build_gep(args, &[i64_t.const_int(i as u64, false)], param_name);
+            let p =
+                self.builder
+                    .build_gep(args, &[i64_t.const_int((i + 1) as u64, false)], param_name);
             let p = self.builder.build_pointer_cast(
                 p,
                 any_ptr_t.pointer_type(AddressSpace::Generic),
@@ -300,27 +297,27 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             .pointer_type(AddressSpace::Generic);
         let i64_t = self.context.int_type(64);
 
-        let size = i64_t.const_int(args.len() as u64, false);
+        let size = i64_t.const_int((args.len() + 1) as u64, false);
         let args_ptr = self.builder.build_array_alloca(any_ptr_t, size, "args");
 
+        self.builder.build_store(
+            self.builder
+                .build_gep(args_ptr, &[i64_t.const_int(0 as u64, false)], "arg_ptr"),
+            self.builder.build_pointer_cast(f, any_ptr_t, "f_ptr"),
+        );
+
         for (i, arg) in args.iter().enumerate() {
-            let a_ptr =
-                self.builder
-                    .build_gep(args_ptr, &[i64_t.const_int(i as u64, false)], "arg_ptr");
+            let a_ptr = self.builder.build_gep(
+                args_ptr,
+                &[i64_t.const_int((i + 1) as u64, false)],
+                "arg_ptr",
+            );
             self.builder.build_store(a_ptr, *arg);
         }
 
         let dispatch = self.module.get_function("dispatch").unwrap();
 
-        let result = self.builder.build_call(
-            dispatch,
-            &[
-                self.builder.build_pointer_cast(f, any_ptr_t, "f_ptr"),
-                size,
-                args_ptr,
-            ],
-            name,
-        );
+        let result = self.builder.build_call(dispatch, &[size, args_ptr], name);
 
         Ok(result)
     }
