@@ -867,7 +867,8 @@ impl<'ctx> ExecutionSession<'ctx> {
             eprintln!();
 
             if let AlphaTypeDef::Struct { .. } = alpha_type.typedef {
-                self.build_constructor(type_ptr as AnyPtr, t, &alpha_type)?;
+                self.build_constructor(type_ptr as AnyPtr, &alpha_type)?;
+                self.build_accessors(type_ptr as AnyPtr, &alpha_type)?;
             }
         }
 
@@ -937,7 +938,6 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn build_constructor(
         &mut self,
         type_ptr: AnyPtr,
-        t: Type,
         def: &AlphaType,
     ) -> Result<(), Box<dyn Error>> {
         let fields = match &def.typedef {
@@ -952,7 +952,6 @@ impl<'ctx> ExecutionSession<'ctx> {
             &module,
             &self.global_env,
             def,
-            t,
         )?;
         let name = constructor.get_name();
         self.load_module(module)?;
@@ -979,10 +978,54 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(())
     }
 
+    fn build_accessors(&mut self, type_ptr: AnyPtr, def: &AlphaType) -> Result<(), Box<dyn Error>> {
+        let fields = match &def.typedef {
+            AlphaTypeDef::Struct { fields } => fields,
+            _ => return Ok(()),
+        };
+
+        // let type_llvm_name = match self.global_env.lookup(def.name) {
+        //     Some(EnvValue::Global(s)) => s,
+        //     _ => bail!("unable to find type: {:?}", def.name),
+        // };
+        // let type_obj = unsafe { *self.jit.lookup::<*const AnyPtr>(type_llvm_name)? };
+
+        for (i, (name, _typ)) in fields.iter().enumerate() {
+            let f_name = self.unique_name(*name);
+            let module = self.new_module("accessor");
+            let accessor = Compiler::compile_accessor(
+                &mut self.interner,
+                self.context.context(),
+                &module,
+                &self.global_env,
+                def,
+                i,
+                &f_name,
+            )?;
+            let instance_name = accessor.get_name();
+            self.load_module(module)?;
+
+            let instance = self.jit.lookup::<GenericFn>(&instance_name)?;
+
+            let fn_obj = self.ensure_function(*name)?;
+            self.function_add_method(
+                fn_obj,
+                Method {
+                    signature: vec![
+                        ParamSpecifier::Eq(fn_obj),
+                        ParamSpecifier::SubtypeOf(type_ptr),
+                    ],
+                    instance: instance,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
     fn eval_function_definition(&mut self, mut def: exp::Function) -> Result<(), Box<dyn Error>> {
         let fn_name_s = def.prototype.name;
-        let fn_name = self.interner.resolve(fn_name_s).unwrap().to_string();
-        let method_name = format!("{}.method.{}", fn_name, self.next_counter());
+        let method_name = self.unique_name(fn_name_s);
         let method_name_s = self.interner.intern(&method_name);
 
         def.prototype.name = method_name_s;
@@ -1156,5 +1199,10 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn next_counter(&mut self) -> usize {
         self.counter += 1;
         self.counter
+    }
+
+    fn unique_name(&mut self, symbol: Symbol) -> String {
+        let i = self.next_counter();
+        format!("{}.{}_", self.interner.resolve(symbol).unwrap(), i)
     }
 }

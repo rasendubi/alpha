@@ -3,7 +3,7 @@ use std::error::Error;
 use llvm::builder::Builder;
 use llvm::context::Context;
 use llvm::module::Module;
-use llvm::types::{AddressSpace, Type};
+use llvm::types::AddressSpace;
 use llvm::values::Value;
 
 use simple_error::{bail, simple_error};
@@ -66,7 +66,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         module: &'a Module,
         env: &'a Env<'a, EnvValue>,
         def: &AlphaType,
-        t: Type,
     ) -> Result<Value, Box<dyn Error>> {
         let mut compiler = Compiler {
             interner,
@@ -76,7 +75,27 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             global_env: env,
         };
 
-        compiler.compile_constr(def, t)
+        compiler.compile_constr(def)
+    }
+
+    pub fn compile_accessor(
+        interner: &'a mut SymbolInterner,
+        context: &'ctx Context,
+        module: &'a Module,
+        env: &'a Env<'a, EnvValue>,
+        def: &AlphaType,
+        i: usize,
+        name: &str,
+    ) -> Result<Value, Box<dyn Error>> {
+        let mut compiler = Compiler {
+            interner,
+            context,
+            builder: context.create_builder(),
+            module,
+            global_env: env,
+        };
+
+        compiler.compile_access(def, i, name)
     }
 
     fn build_allocate(&mut self, size: u64, name: &str) -> Value {
@@ -115,7 +134,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         self.builder.build_store(typetag_ptr, tag);
     }
 
-    fn compile_constr(&mut self, def: &AlphaType, t: Type) -> Result<Value, Box<dyn Error>> {
+    fn compile_constr(&mut self, def: &AlphaType) -> Result<Value, Box<dyn Error>> {
         let fields = match &def.typedef {
             AlphaTypeDef::Struct { fields } => fields,
             _ => panic!("Compiler::compile_constr() called on non-struct"),
@@ -138,6 +157,10 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         self.builder.position_at_end(entry);
         let env = self.build_fn_prologue(self.global_env, &proto, function)?;
 
+        let t = self
+            .context
+            .get_named_struct(self.interner.resolve(def.name).unwrap())
+            .unwrap();
         let res = self.build_dyn_allocate(t.size(), "result");
 
         let type_ = self.compile_exp(self.global_env, &Exp::Symbol(def.name))?;
@@ -172,6 +195,86 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         }
 
         self.builder.build_ret(res);
+
+        if function.verify_function() {
+            Ok(function)
+        } else {
+            eprintln!("\ninvalid constructor generated:");
+            self.module.dump_to_stderr();
+            eprintln!();
+
+            unsafe {
+                function.delete_function();
+            }
+            bail!("invalid generated function")
+        }
+    }
+
+    fn compile_access(
+        &mut self,
+        def: &AlphaType,
+        i: usize,
+        name: &str,
+    ) -> Result<Value, Box<dyn Error>> {
+        let fields = match &def.typedef {
+            AlphaTypeDef::Struct { fields } => fields,
+            _ => panic!("Compiler::compile_constr() called on non-struct"),
+        };
+
+        let (_name, typ) = &fields[i];
+
+        let this_s = self.interner.intern("this");
+
+        let proto = exp::FunctionPrototype {
+            name: self.interner.intern(name),
+            params: vec![exp::FunctionParameter {
+                name: this_s,
+                typ: def.name,
+            }],
+            result_type: typ.name,
+        };
+
+        let function = self.compile_prototype(&proto)?;
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let env = self.build_fn_prologue(self.global_env, &proto, function)?;
+
+        let t = self
+            .context
+            .get_named_struct(self.interner.resolve(def.name).unwrap())
+            .unwrap();
+
+        let this = self.compile_exp(&env, &Exp::Symbol(this_s))?;
+        let this_as_t = self.builder.build_pointer_cast(
+            this,
+            t.pointer_type(AddressSpace::Generic),
+            "this_as_t",
+        );
+        let field_ptr = self
+            .builder
+            .build_struct_gep(this_as_t, i as u32, "field_ptr");
+        let field = self.builder.build_load(field_ptr, "field");
+        let field = if typ.typedef.is_inlinable() {
+            // box value
+            let field_t = self
+                .context
+                .get_named_struct(self.interner.resolve(typ.name).unwrap())
+                .unwrap();
+            let res = self.build_dyn_allocate(field_t.size(), "result");
+            let field_type = self.compile_exp(self.global_env, &Exp::Symbol(typ.name))?;
+            self.build_set_typetag(res, field_type);
+            let res_as_t = self.builder.build_pointer_cast(
+                res,
+                field_t.pointer_type(AddressSpace::Generic),
+                "res_as_t",
+            );
+            self.builder.build_store(res_as_t, field);
+            res
+        } else {
+            field
+        };
+
+        self.builder.build_ret(field);
 
         if function.verify_function() {
             Ok(function)
