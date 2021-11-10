@@ -108,6 +108,18 @@ impl Builder {
             ))
         }
     }
+
+    pub fn build_struct_gep(&self, ptr: Value, index: u32, name: &str) -> Value {
+        let name = CString::new(name).unwrap();
+        unsafe {
+            Value::new(core::LLVMBuildStructGEP(
+                self.0,
+                ptr.0,
+                index,
+                name.as_ptr(),
+            ))
+        }
+    }
 }
 
 impl Drop for Builder {

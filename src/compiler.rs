@@ -3,17 +3,17 @@ use std::error::Error;
 use llvm::builder::Builder;
 use llvm::context::Context;
 use llvm::module::Module;
-use llvm::types::AddressSpace;
+use llvm::types::{AddressSpace, Type};
 use llvm::values::Value;
 
 use simple_error::{bail, simple_error};
 
 use crate::env::Env;
-use crate::symbol::SymbolInterner;
-
 use crate::execution_session::EnvValue;
 use crate::exp;
 use crate::exp::Exp;
+use crate::symbol::SymbolInterner;
+use crate::types::{AlphaType, AlphaTypeDef};
 
 pub struct Compiler<'a, 'ctx> {
     interner: &'a mut SymbolInterner,
@@ -60,10 +60,33 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         compiler.compile_fn(f)
     }
 
+    pub fn compile_constructor(
+        interner: &'a mut SymbolInterner,
+        context: &'ctx Context,
+        module: &'a Module,
+        env: &'a Env<'a, EnvValue>,
+        def: &AlphaType,
+        t: Type,
+    ) -> Result<Value, Box<dyn Error>> {
+        let mut compiler = Compiler {
+            interner,
+            context,
+            builder: context.create_builder(),
+            module,
+            global_env: env,
+        };
+
+        compiler.compile_constr(def, t)
+    }
+
     fn build_allocate(&mut self, size: u64, name: &str) -> Value {
+        self.build_dyn_allocate(self.context.int_type(64).const_int(size, false), name)
+    }
+
+    fn build_dyn_allocate(&mut self, size: Value, name: &str) -> Value {
         self.builder.build_call(
             self.module.get_function("gc_allocate").unwrap(),
-            &[self.context.int_type(64).const_int(size, false)],
+            &[size],
             name,
         )
     }
@@ -90,6 +113,78 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             "typetag_ptr",
         );
         self.builder.build_store(typetag_ptr, tag);
+    }
+
+    fn compile_constr(&mut self, def: &AlphaType, t: Type) -> Result<Value, Box<dyn Error>> {
+        let fields = match &def.typedef {
+            AlphaTypeDef::Struct { fields } => fields,
+            _ => panic!("Compiler::compile_constr() called on non-struct"),
+        };
+
+        let proto = exp::FunctionPrototype {
+            name: def.name,
+            params: fields
+                .iter()
+                .map(|(name, typ)| exp::FunctionParameter {
+                    name: *name,
+                    typ: typ.name,
+                })
+                .collect(),
+            result_type: def.name,
+        };
+
+        let function = self.compile_prototype(&proto)?;
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let env = self.build_fn_prologue(self.global_env, &proto, function)?;
+
+        let res = self.build_dyn_allocate(t.size(), "result");
+
+        let type_ = self.compile_exp(self.global_env, &Exp::Symbol(def.name))?;
+        self.build_set_typetag(res, type_);
+
+        let result_as_t = self.builder.build_pointer_cast(
+            res,
+            t.pointer_type(AddressSpace::Generic),
+            "result_as_t",
+        );
+
+        for (i, (name, typ)) in fields.iter().enumerate() {
+            let value = self.compile_exp(&env, &Exp::Symbol(*name))?;
+            let value = if typ.typedef.is_inlinable() {
+                let field_t = self
+                    .context
+                    .get_named_struct(self.interner.resolve(typ.name).unwrap())
+                    .unwrap();
+                let field_as_t = self.builder.build_pointer_cast(
+                    value,
+                    field_t.pointer_type(AddressSpace::Generic),
+                    "field_as_t",
+                );
+                self.builder.build_load(field_as_t, "field_value")
+            } else {
+                value
+            };
+            let field_ptr = self
+                .builder
+                .build_struct_gep(result_as_t, i as u32, "field_ptr");
+            self.builder.build_store(field_ptr, value);
+        }
+
+        self.builder.build_ret(res);
+
+        if function.verify_function() {
+            Ok(function)
+        } else {
+            eprintln!("\ninvalid constructor generated:");
+            self.module.dump_to_stderr();
+            eprintln!();
+
+            unsafe {
+                function.delete_function();
+            }
+            bail!("invalid generated function")
+        }
     }
 
     fn compile_fn(&mut self, f: &exp::Function) -> Result<Value, Box<dyn Error>> {

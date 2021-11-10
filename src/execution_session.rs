@@ -785,12 +785,13 @@ impl<'ctx> ExecutionSession<'ctx> {
                     self.interner.resolve(alpha_type.supertype).unwrap()
                 )
             })?;
+
         let supertype_ptr = self
             .jit
             .lookup::<*const *const AbstractType>(supertype_t.as_global())?;
+        // TODO: verify the supertype is abstract
 
         let type_ptr = if alpha_type.typedef == AlphaTypeDef::Abstract {
-            // TODO: verify the type is abstract
             let abstracttype_t = self.jit.lookup::<*const *const DataType>("AbstractType")?;
             let type_ptr = unsafe {
                 let type_ptr =
@@ -814,10 +815,10 @@ impl<'ctx> ExecutionSession<'ctx> {
                 .n_ptrs()
                 .expect("abstract types are not supported yet");
 
-            let datatype_t = self.jit.lookup::<*const *const DataType>("DataType")?;
             let type_ptr = unsafe {
+                let datatype_t = *self.jit.lookup::<*const *const DataType>("DataType")?;
                 let type_ptr = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
-                set_typetag(type_ptr, *datatype_t);
+                set_typetag(type_ptr, datatype_t);
                 *type_ptr = DataType {
                     supertype: *supertype_ptr,
                     size: type_size as u64,
@@ -827,19 +828,6 @@ impl<'ctx> ExecutionSession<'ctx> {
                 };
                 type_ptr
             };
-
-            let t = self.build_type_specifier(&alpha_type)?;
-            eprint!("defined type: ");
-            t.dump_to_stderr();
-            eprint!(
-                " size={}, n_ptrs={}, is_inlinable={}, has_ptrs={}, is_ptr={}",
-                type_size,
-                n_ptrs,
-                alpha_type.typedef.is_inlinable(),
-                alpha_type.typedef.has_ptrs(),
-                alpha_type.typedef.is_ptr(),
-            );
-            eprintln!();
 
             type_ptr as AnyPtrMut
         };
@@ -864,9 +852,29 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         self.load_module(module)?;
 
+        if alpha_type.typedef != AlphaTypeDef::Abstract {
+            let t = self.build_type_specifier(&alpha_type)?;
+            eprint!("defined type: ");
+            t.dump_to_stderr();
+            eprint!(
+                " size={:?}, n_ptrs={:?}, is_inlinable={}, has_ptrs={}, is_ptr={}",
+                alpha_type.typedef.size(),
+                alpha_type.typedef.n_ptrs(),
+                alpha_type.typedef.is_inlinable(),
+                alpha_type.typedef.has_ptrs(),
+                alpha_type.typedef.is_ptr(),
+            );
+            eprintln!();
+
+            if let AlphaTypeDef::Struct { .. } = alpha_type.typedef {
+                self.build_constructor(type_ptr as AnyPtr, t, &alpha_type)?;
+            }
+        }
+
         Ok(type_ptr as AnyPtrMut)
     }
 
+    /// Build LLVM IR type for `type_`.
     fn build_type_specifier(&mut self, type_: &AlphaType) -> Result<Type, Box<dyn Error>> {
         let name = self.interner.resolve(type_.name).unwrap();
         let t = match &type_.typedef {
@@ -924,6 +932,51 @@ impl<'ctx> ExecutionSession<'ctx> {
         };
 
         Ok(t)
+    }
+
+    fn build_constructor(
+        &mut self,
+        type_ptr: AnyPtr,
+        t: Type,
+        def: &AlphaType,
+    ) -> Result<(), Box<dyn Error>> {
+        let fields = match &def.typedef {
+            AlphaTypeDef::Struct { fields } => fields,
+            _ => return Ok(()),
+        };
+
+        let module = self.new_module("constructor");
+        let constructor = Compiler::compile_constructor(
+            &mut self.interner,
+            self.context.context(),
+            &module,
+            &self.global_env,
+            def,
+            t,
+        )?;
+        let name = constructor.get_name();
+        self.load_module(module)?;
+
+        let constructor_code = self.jit.lookup::<GenericFn>(&name)?;
+        self.function_add_method(
+            type_ptr,
+            Method {
+                signature: std::iter::once(ParamSpecifier::Eq(type_ptr))
+                    .chain(fields.iter().map(|(_name, type_)| {
+                        let llvm_name = match self.global_env.lookup(type_.name) {
+                            Some(EnvValue::Global(s)) => s,
+                            _ => panic!("unable to lookup: {:?}", type_.name),
+                        };
+                        ParamSpecifier::SubtypeOf(unsafe {
+                            *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap()
+                        })
+                    }))
+                    .collect(),
+                instance: constructor_code,
+            },
+        );
+
+        Ok(())
     }
 
     fn eval_function_definition(&mut self, mut def: exp::Function) -> Result<(), Box<dyn Error>> {

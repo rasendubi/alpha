@@ -31,7 +31,7 @@ impl AlphaType {
             TypeSpecifier::Integer(n) => AlphaTypeDef::Int(*n),
             TypeSpecifier::Float(n) => AlphaTypeDef::Float(*n),
             TypeSpecifier::Struct(fields) => {
-                let mut fs = fields
+                let fs = fields
                     .iter()
                     .map(|f| {
                         (
@@ -40,7 +40,7 @@ impl AlphaType {
                         )
                     })
                     .collect::<Vec<_>>();
-                fs.sort_by(|a, b| a.1.typedef.is_ptr().cmp(&b.1.typedef.is_ptr()).reverse());
+                // fs.sort_by(|a, b| a.1.typedef.is_ptr().cmp(&b.1.typedef.is_ptr()).reverse());
                 AlphaTypeDef::Struct { fields: fs }
             }
         };

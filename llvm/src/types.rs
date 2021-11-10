@@ -44,6 +44,10 @@ impl Type {
         unsafe { core::LLVMTypeIsSized(self.0) != 0 }
     }
 
+    pub fn size(&self) -> Value {
+        unsafe { Value::new(core::LLVMSizeOf(self.0)) }
+    }
+
     /// Return width of integer type.
     ///
     /// # Examples
@@ -147,6 +151,18 @@ impl Type {
             );
         }
         *self
+    }
+
+    pub fn const_struct(&self, values: &[Value]) -> Value {
+        assert_eq!(self.kind(), TypeKind::LLVMStructTypeKind);
+        let mut values = values.iter().map(|x| x.0).collect::<Vec<_>>();
+        unsafe {
+            Value::new(core::LLVMConstNamedStruct(
+                self.0,
+                values.as_mut_ptr(),
+                values.len() as u32,
+            ))
+        }
     }
 
     /// Obtain a function type consisting of a specified signature.

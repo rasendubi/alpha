@@ -10,6 +10,7 @@ pub struct Value(pub(crate) LLVMValueRef);
 
 impl Value {
     pub(crate) fn new(value_ref: LLVMValueRef) -> Self {
+        assert!(!value_ref.is_null());
         Value(value_ref)
     }
 
