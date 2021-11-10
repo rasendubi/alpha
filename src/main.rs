@@ -19,15 +19,15 @@ fn main() {
 
     let mut es = ExecutionSession::new();
 
-    let mut eval = |s: &str| match es.eval(s) {
-        Ok(()) => {}
-        Err(err) => println!("Error: {}", err),
-    };
-
     loop {
         match rl.readline("user> ") {
             Err(_) => break,
-            Ok(line) => eval(&line),
+            Ok(line) => match es.eval(&line) {
+                Ok(()) => {
+                    rl.add_history_entry(line);
+                }
+                Err(err) => println!("Error: {}", err),
+            },
         }
     }
     rl.save_history(HISTORY_FILE).unwrap();
