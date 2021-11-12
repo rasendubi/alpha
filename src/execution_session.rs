@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::error::Error;
 
 use log::{error, log_enabled, trace, Level};
@@ -15,17 +14,13 @@ use crate::compiler::Compiler;
 use crate::env::Env;
 use crate::exp;
 use crate::exp::{lower_sexp, Exp};
-use crate::gc::Gc;
+use crate::gc;
 use crate::parser::Parser;
 use crate::symbol::{Symbol, SymbolInterner};
 use crate::types::{AlphaType, AlphaTypeDef};
 
-thread_local! {
-    static GC: RefCell<Gc> = RefCell::new(unsafe { Gc::new_uninit() });
-}
-
 unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
-    GC.with(|gc| gc.borrow_mut().allocate(size as usize))
+    gc::allocate(size as usize)
 }
 
 type AnyPtr = *const u64;
@@ -372,11 +367,9 @@ impl<'ctx> ExecutionSession<'ctx> {
         unsafe {
             llvm_sys::target::LLVM_InitializeNativeTarget();
             llvm_sys::target::LLVM_InitializeNativeAsmPrinter();
-        }
 
-        GC.with(|gc| unsafe {
-            gc.borrow_mut().init();
-        });
+            gc::init();
+        }
 
         let context = ThreadSafeContext::new();
         let globals = context.context().create_module("globals");
