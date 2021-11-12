@@ -1,5 +1,7 @@
 use std::alloc;
 
+use log::trace;
+
 pub struct Gc {
     #[allow(unused)]
     start: *mut u8,
@@ -49,7 +51,7 @@ impl Gc {
                 panic!("gc: out of memory");
             } else {
                 self.cur = next;
-                println!("allocate({}) = {:#?}", size, result);
+                trace!("allocate({}) = {:#?}", size, result);
                 result
             }
         }

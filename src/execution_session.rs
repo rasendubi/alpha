@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::error::Error;
 
+use log::{error, log_enabled, trace, Level};
+
 use simple_error::simple_error;
 
 use llvm::module::Module;
@@ -217,7 +219,7 @@ unsafe extern "C" fn alpha_print_abstracttype(_n_args: i64, args: *const AnyPtr)
 
 unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let args_slice = std::slice::from_raw_parts(args, n_args as usize);
-    eprintln!("dispatch: {:?}", args_slice);
+    trace!("dispatch: {:?}", args_slice);
 
     let f = args_slice[0];
 
@@ -249,9 +251,9 @@ unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
                         .map(|x| get_cpl(type_of(*x)))
                         .collect::<Vec<_>>();
                     let signature = args_slice.iter().map(|a| type_of(*a)).collect::<Vec<_>>();
-                    eprintln!("ambiguity finding matching method for: {:?}", signature);
-                    eprintln!("available methods: {:?}", methods);
-                    eprintln!("cpls: {:?}", args_cpls);
+                    error!("ambiguity finding matching method for: {:?}", signature);
+                    error!("available methods: {:?}", methods);
+                    error!("cpls: {:?}", args_cpls);
                     panic!("ambiguity! between {:?} and {:?}", current, method);
                 }
             }
@@ -266,9 +268,9 @@ unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
                 .map(|x| get_cpl(type_of(*x)))
                 .collect::<Vec<_>>();
             let signature = args_slice.iter().map(|a| type_of(*a)).collect::<Vec<_>>();
-            eprintln!("unable to find matching method: {:?}", signature);
-            eprintln!("available methods: {:?}", methods);
-            eprintln!("cpls: {:?}", args_cpls);
+            error!("unable to find matching method: {:?}", signature);
+            error!("available methods: {:?}", methods);
+            error!("cpls: {:?}", args_cpls);
             panic!("unable to find matching method");
         }
     }
@@ -414,7 +416,10 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     fn load_module(&mut self, module: Module) -> Result<(), Box<dyn Error>> {
-        module.dump_to_stderr();
+        if log_enabled!(Level::Trace) {
+            trace!("loading module:");
+            module.dump_to_stderr();
+        }
         let module = self.context.create_module(module);
         self.jit.add_module(module)?;
         Ok(())
@@ -424,7 +429,10 @@ impl<'ctx> ExecutionSession<'ctx> {
         &mut self,
         module: Module,
     ) -> Result<ResourceTracker, Box<dyn Error>> {
-        module.dump_to_stderr();
+        if log_enabled!(Level::Trace) {
+            trace!("loading module:");
+            module.dump_to_stderr();
+        }
         let module = self.context.create_module(module);
         let tracker = self.jit.add_module_with_tracker(module)?;
         Ok(tracker)
@@ -438,7 +446,10 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn load_ir_module(&mut self, name: &str, ir: &str) -> Result<(), Box<dyn Error>> {
         let tsc = ThreadSafeContext::new();
         let module = tsc.context().parse_ir_module(name, ir)?;
-        module.dump_to_stderr();
+        if log_enabled!(Level::Trace) {
+            trace!("loading module:");
+            module.dump_to_stderr();
+        }
         let module = tsc.create_module(module);
         self.jit.add_module(module)?;
         Ok(())
@@ -503,7 +514,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                         self.interner.intern("size"),
                         AlphaType {
                             name: self.interner.intern("i64"),
-                            supertype: self.interner.intern("Any"),
+                            supertype: self.interner.intern("Number"),
                             typedef: AlphaTypeDef::Int(64),
                         },
                     ),
@@ -511,7 +522,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                         self.interner.intern("n_ptrs"),
                         AlphaType {
                             name: self.interner.intern("i64"),
-                            supertype: self.interner.intern("Any"),
+                            supertype: self.interner.intern("Number"),
                             typedef: AlphaTypeDef::Int(64),
                         },
                     ),
@@ -520,7 +531,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                         AlphaType {
                             // actually: pointer to Vec<Method>
                             name: self.interner.intern("i64"),
-                            supertype: self.interner.intern("Any"),
+                            supertype: self.interner.intern("Number"),
                             typedef: AlphaTypeDef::Int(64),
                         },
                     ),
@@ -627,20 +638,23 @@ impl<'ctx> ExecutionSession<'ctx> {
         // poor man's standard library
         self.eval(
             r#"
-              type i64 = integer(64)
-              type f64 = float(64)
+              type Number = abstract
+              type i64: Number = integer(64)
+              type f64: Number = float(64)
             "#,
         )?;
 
         // DataType type specifier can only be built after i64 and f64 are defined in alpha.
         let t = self.build_type_specifier(&datatype_typedef)?;
-        eprint!("defined type: ");
-        t.dump_to_stderr();
-        eprintln!();
+        if log_enabled!(Level::Trace) {
+            trace!("defined type: ");
+            t.dump_to_stderr();
+        }
         let t = self.build_type_specifier(&abstracttype_typedef)?;
-        eprint!("defined type: ");
-        t.dump_to_stderr();
-        eprintln!();
+        if log_enabled!(Level::Trace) {
+            trace!("defined type: ");
+            t.dump_to_stderr();
+        }
 
         let i64_t = unsafe { *self.jit.lookup::<*const *const DataType>("i64")? };
         let f64_t = unsafe { *self.jit.lookup::<*const *const DataType>("f64")? };
@@ -741,15 +755,14 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     pub fn eval(&mut self, s: &str) -> Result<(), Box<dyn Error>> {
-        println!("eval: {}", s);
+        trace!("eval: {}", s);
         let mut parser = Parser::new(s);
         while parser.has_input() {
             let sexp = parser.parse()?;
-            println!("sexp: {}", sexp);
-            println!();
+            trace!("sexp: {}", sexp);
 
             let exp = lower_sexp(&sexp, &mut self.interner)?;
-            println!("exp: {:?}\n", &exp);
+            trace!("exp: {:?}", &exp);
 
             self.eval_exp(exp)?;
         }
@@ -771,7 +784,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
     // Build a global type binding and initialize it. This does not execute any code inside the JIT.
     fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<AnyPtrMut, Box<dyn Error>> {
-        println!("type lowered to {:?}", alpha_type);
+        trace!("type lowered to {:?}", alpha_type);
 
         let name = self.interner.resolve(alpha_type.name).unwrap().to_string();
         let module = self.context.context().create_module(&name);
@@ -854,17 +867,18 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         if alpha_type.typedef != AlphaTypeDef::Abstract {
             let t = self.build_type_specifier(&alpha_type)?;
-            eprint!("defined type: ");
-            t.dump_to_stderr();
-            eprint!(
-                " size={:?}, n_ptrs={:?}, is_inlinable={}, has_ptrs={}, is_ptr={}",
-                alpha_type.typedef.size(),
-                alpha_type.typedef.n_ptrs(),
-                alpha_type.typedef.is_inlinable(),
-                alpha_type.typedef.has_ptrs(),
-                alpha_type.typedef.is_ptr(),
-            );
-            eprintln!();
+            if log_enabled!(Level::Trace) {
+                trace!("defined type: ");
+                t.dump_to_stderr();
+                trace!(
+                    " size={:?}, n_ptrs={:?}, is_inlinable={}, has_ptrs={}, is_ptr={}",
+                    alpha_type.typedef.size(),
+                    alpha_type.typedef.n_ptrs(),
+                    alpha_type.typedef.is_inlinable(),
+                    alpha_type.typedef.has_ptrs(),
+                    alpha_type.typedef.is_ptr(),
+                );
+            }
 
             if let AlphaTypeDef::Struct { .. } = alpha_type.typedef {
                 self.build_constructor(type_ptr as AnyPtr, &alpha_type)?;

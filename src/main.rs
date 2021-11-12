@@ -31,6 +31,8 @@ impl Validator for InputValidator {
 const HISTORY_FILE: &str = "history.txt";
 
 fn main() {
+    pretty_env_logger::init();
+
     let h = InputValidator {
         brackets: MatchingBracketValidator::new(),
     };

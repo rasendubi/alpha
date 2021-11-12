@@ -1,5 +1,7 @@
 use std::error::Error;
 
+use log::{error, log_enabled, Level};
+
 use llvm::builder::Builder;
 use llvm::context::Context;
 use llvm::module::Module;
@@ -199,9 +201,8 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         if function.verify_function() {
             Ok(function)
         } else {
-            eprintln!("\ninvalid constructor generated:");
+            error!("\ninvalid constructor generated:");
             self.module.dump_to_stderr();
-            eprintln!();
 
             unsafe {
                 function.delete_function();
@@ -279,9 +280,10 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         if function.verify_function() {
             Ok(function)
         } else {
-            eprintln!("\ninvalid constructor generated:");
-            self.module.dump_to_stderr();
-            eprintln!();
+            if log_enabled!(Level::Error) {
+                error!("\ninvalid constructor generated:");
+                self.module.dump_to_stderr();
+            }
 
             unsafe {
                 function.delete_function();
@@ -318,9 +320,10 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         if function.verify_function() {
             Ok(function)
         } else {
-            eprintln!("\ninvalid function generated:");
-            self.module.dump_to_stderr();
-            eprintln!();
+            if log_enabled!(Level::Error) {
+                error!("\ninvalid function generated:");
+                self.module.dump_to_stderr();
+            }
 
             unsafe {
                 function.delete_function();

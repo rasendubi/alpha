@@ -13,6 +13,8 @@ string-interner = "0.14.0"
 simple-error = "0.2.3"
 llvm = { path = "./llvm" }
 llvm-sys = "130"
+log = "0.4"
+pretty_env_logger = "0.4"
 
 [workspace]
 members = [
