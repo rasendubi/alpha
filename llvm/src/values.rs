@@ -1,6 +1,7 @@
 use llvm_sys::core;
 use llvm_sys::prelude::*;
 
+use crate::string::LLVMString;
 use crate::types::Type;
 
 pub use llvm_sys::LLVMValueKind as ValueKind;
@@ -74,6 +75,9 @@ impl Value {
             core::LLVMDumpValue(self.0);
         }
     }
+    pub fn dump(&self) -> LLVMString {
+        unsafe { LLVMString::new(core::LLVMPrintValueToString(self.0)) }
+    }
 }
 
 pub struct ParamValueIter {
@@ -101,5 +105,17 @@ impl Iterator for ParamValueIter {
         } else {
             Some(Value::new(self.value))
         }
+    }
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "Value({})", self.dump())
+    }
+}
+
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.dump())
     }
 }

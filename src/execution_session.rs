@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use log::{error, log_enabled, trace, Level};
+use log::{error, trace};
 
 use simple_error::simple_error;
 
@@ -290,6 +290,7 @@ const STDLIB_LL: &str = r#"
   }
 "#;
 
+#[derive(Debug)]
 pub enum EnvValue {
     Global(String),
     Local(Value),
@@ -320,14 +321,6 @@ pub struct ExecutionSession<'ctx> {
 
 impl<'ctx> ExecutionSession<'ctx> {
     pub fn new() -> Self {
-        unsafe {
-            llvm_sys::target::LLVM_InitializeNativeTarget();
-            llvm_sys::target::LLVM_InitializeNativeAsmPrinter();
-
-            crate::gc::init();
-            crate::types::init();
-        }
-
         let context = ThreadSafeContext::new();
         let globals = context.context().create_module("globals");
         let jit = LLJITBuilder::new().build().unwrap();
@@ -364,10 +357,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     fn load_module(&mut self, module: Module) -> Result<(), Box<dyn Error>> {
-        if log_enabled!(Level::Trace) {
-            trace!("loading module:");
-            module.dump_to_stderr();
-        }
+        trace!("loading module:\n{}", module);
         let module = self.context.create_module(module);
         self.jit.add_module(module)?;
         Ok(())
@@ -377,10 +367,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         &mut self,
         module: Module,
     ) -> Result<ResourceTracker, Box<dyn Error>> {
-        if log_enabled!(Level::Trace) {
-            trace!("loading module:");
-            module.dump_to_stderr();
-        }
+        trace!("loading module:\n{}", module);
         let module = self.context.create_module(module);
         let tracker = self.jit.add_module_with_tracker(module)?;
         Ok(tracker)
@@ -394,10 +381,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn load_ir_module(&mut self, name: &str, ir: &str) -> Result<(), Box<dyn Error>> {
         let tsc = ThreadSafeContext::new();
         let module = tsc.context().parse_ir_module(name, ir)?;
-        if log_enabled!(Level::Trace) {
-            trace!("loading module:");
-            module.dump_to_stderr();
-        }
+        trace!("loading module:\n{}", module);
         let module = tsc.create_module(module);
         self.jit.add_module(module)?;
         Ok(())
@@ -543,15 +527,9 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         // DataType type specifier can only be built after i64 and f64 are defined in alpha.
         let t = self.build_type_specifier(&datatype_typedef)?;
-        if log_enabled!(Level::Trace) {
-            trace!("defined type: ");
-            t.dump_to_stderr();
-        }
+        trace!("defined type: {}", t);
         let t = self.build_type_specifier(&abstracttype_typedef)?;
-        if log_enabled!(Level::Trace) {
-            trace!("defined type: ");
-            t.dump_to_stderr();
-        }
+        trace!("defined type: {}", t);
 
         let i64_t = unsafe { *self.jit.lookup::<*const *const DataType>("i64")? };
         let f64_t = unsafe { *self.jit.lookup::<*const *const DataType>("f64")? };
@@ -683,8 +661,8 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<AnyPtrMut, Box<dyn Error>> {
         trace!("type lowered to {:?}", alpha_type);
 
-        let name = alpha_type.name.as_str();
-        let module = self.context.context().create_module(&name);
+        let name = alpha_type.name;
+        let module = self.context.context().create_module(name.as_str());
 
         let supertype_t = self
             .global_env
@@ -692,6 +670,9 @@ impl<'ctx> ExecutionSession<'ctx> {
             .ok_or_else(|| {
                 simple_error!("unable to find type: {}", alpha_type.supertype.as_str())
             })?;
+
+        trace!("found supertype_t: {:?}", supertype_t);
+        trace!("env: {:?}", self.global_env);
 
         let supertype_ptr = self
             .jit
@@ -706,7 +687,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                 set_typetag(type_ptr, *abstracttype_t);
                 *type_ptr = AbstractType {
                     supertype: *supertype_ptr,
-                    name: name.to_string(),
+                    name: name,
                 };
                 type_ptr
             };
@@ -731,7 +712,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                     size: type_size as u64,
                     n_ptrs: n_ptrs as u64,
                     methods: Vec::new(),
-                    name: name.to_string(),
+                    name: name,
                 };
                 type_ptr
             };
@@ -750,9 +731,9 @@ impl<'ctx> ExecutionSession<'ctx> {
             .unwrap()
             .pointer_type(AddressSpace::Generic);
 
-        self.inject_global(&module, &name, ptr_t, type_ptr);
+        self.inject_global(&module, name.as_str(), ptr_t, type_ptr);
 
-        self.globals.add_global(&name, ptr_t); // without initializer here
+        self.globals.add_global(name.as_str(), ptr_t); // without initializer here
         self.global_env
             .insert(alpha_type.name, EnvValue::Global(name.to_string()));
         self.types.insert(alpha_type.name, alpha_type.clone());
@@ -761,18 +742,15 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         if alpha_type.typedef != AlphaTypeDef::Abstract {
             let t = self.build_type_specifier(&alpha_type)?;
-            if log_enabled!(Level::Trace) {
-                trace!("defined type: ");
-                t.dump_to_stderr();
-                trace!(
-                    " size={:?}, n_ptrs={:?}, is_inlinable={}, has_ptrs={}, is_ptr={}",
-                    alpha_type.typedef.size(),
-                    alpha_type.typedef.n_ptrs(),
-                    alpha_type.typedef.is_inlinable(),
-                    alpha_type.typedef.has_ptrs(),
-                    alpha_type.typedef.is_ptr(),
-                );
-            }
+            trace!(
+                "defined type: {} size={:?}, n_ptrs={:?}, is_inlinable={}, has_ptrs={}, is_ptr={}",
+                t,
+                alpha_type.typedef.size(),
+                alpha_type.typedef.n_ptrs(),
+                alpha_type.typedef.is_inlinable(),
+                alpha_type.typedef.has_ptrs(),
+                alpha_type.typedef.is_ptr(),
+            );
 
             if let AlphaTypeDef::Struct { .. } = alpha_type.typedef {
                 self.build_constructor(type_ptr as AnyPtr, &alpha_type)?;

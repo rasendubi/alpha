@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::symbol::Symbol;
 
+#[derive(Debug)]
 pub struct Env<'a, T> {
     parent: Option<&'a Env<'a, T>>,
     bindings: HashMap<Symbol, T>,

@@ -1,21 +1,10 @@
-mod compiler;
-mod env;
-mod execution_session;
-mod exp;
-mod gc;
-mod lexer;
-mod parser;
-mod sexp;
-mod symbol;
-mod types;
+use alpha::ExecutionSession;
 
 use rustyline::validate::{
     MatchingBracketValidator, ValidationContext, ValidationResult, Validator,
 };
 use rustyline::{Editor, Result};
 use rustyline_derive::{Completer, Helper, Highlighter, Hinter};
-
-use crate::execution_session::ExecutionSession;
 
 #[derive(Completer, Helper, Highlighter, Hinter)]
 struct InputValidator {
@@ -32,6 +21,7 @@ const HISTORY_FILE: &str = "history.txt";
 
 fn main() {
     pretty_env_logger::init();
+    alpha::init();
 
     let h = InputValidator {
         brackets: MatchingBracketValidator::new(),

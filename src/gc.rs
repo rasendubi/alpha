@@ -35,6 +35,13 @@ impl<T> GcBox<T> {
         }
     }
 
+    #[allow(dead_code)]
+    pub const fn from_ptr(ptr: *mut T) -> Self {
+        GcBox {
+            ptr: AtomicPtr::new(ptr),
+        }
+    }
+
     pub fn as_ref(&self) -> &AtomicPtr<T> {
         &self.ptr
     }
@@ -109,11 +116,6 @@ impl Block {
 
 const BLOCK_SIZE: usize = 4 * 1024;
 const BLOCK_ALIGN: usize = 4 * 1024;
-
-pub unsafe fn init() {
-    // TODO: move this into allocate and protect with a global lock
-    // BLOCK = Some(Block::new(BLOCK_SIZE, BLOCK_ALIGN));
-}
 
 pub unsafe fn allocate(size: usize) -> *mut u8 {
     // TODO: handle alignment

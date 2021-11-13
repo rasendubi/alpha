@@ -4,6 +4,7 @@ use llvm_sys::prelude::*;
 pub use llvm_sys::LLVMTypeKind as TypeKind;
 
 use crate::context::Context;
+use crate::string::LLVMString;
 use crate::values::Value;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -211,5 +212,20 @@ impl Type {
         unsafe {
             core::LLVMDumpType(self.0);
         }
+    }
+    pub fn dump(&self) -> LLVMString {
+        unsafe { LLVMString::new(core::LLVMPrintTypeToString(self.0)) }
+    }
+}
+
+impl std::fmt::Debug for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "Type({})", self.dump())
+    }
+}
+
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.dump())
     }
 }

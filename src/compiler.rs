@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use log::{error, log_enabled, Level};
+use log::error;
 
 use llvm::builder::Builder;
 use llvm::context::Context;
@@ -14,8 +14,8 @@ use crate::env::Env;
 use crate::execution_session::EnvValue;
 use crate::exp;
 use crate::exp::Exp;
-use crate::types::{AlphaType, AlphaTypeDef};
 use crate::symbol::symbol;
+use crate::types::{AlphaType, AlphaTypeDef};
 
 pub struct Compiler<'a, 'ctx> {
     context: &'ctx Context,
@@ -152,10 +152,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         self.builder.position_at_end(entry);
         let env = self.build_fn_prologue(self.global_env, &proto, function)?;
 
-        let t = self
-            .context
-            .get_named_struct(def.name.as_str())
-            .unwrap();
+        let t = self.context.get_named_struct(def.name.as_str()).unwrap();
         let res = self.build_dyn_allocate(t.size(), "result");
 
         let type_ = self.compile_exp(self.global_env, &Exp::Symbol(def.name))?;
@@ -170,10 +167,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         for (i, (name, typ)) in fields.iter().enumerate() {
             let value = self.compile_exp(&env, &Exp::Symbol(*name))?;
             let value = if typ.typedef.is_inlinable() {
-                let field_t = self
-                    .context
-                    .get_named_struct(typ.name.as_str())
-                    .unwrap();
+                let field_t = self.context.get_named_struct(typ.name.as_str()).unwrap();
                 let field_as_t = self.builder.build_pointer_cast(
                     value,
                     field_t.pointer_type(AddressSpace::Generic),
@@ -233,10 +227,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         self.builder.position_at_end(entry);
         let env = self.build_fn_prologue(self.global_env, &proto, function)?;
 
-        let t = self
-            .context
-            .get_named_struct(def.name.as_str())
-            .unwrap();
+        let t = self.context.get_named_struct(def.name.as_str()).unwrap();
 
         let this = self.compile_exp(&env, &Exp::Symbol(this_s))?;
         let this_as_t = self.builder.build_pointer_cast(
@@ -250,10 +241,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         let field = self.builder.build_load(field_ptr, "field");
         let field = if typ.typedef.is_inlinable() {
             // box value
-            let field_t = self
-                .context
-                .get_named_struct(typ.name.as_str())
-                .unwrap();
+            let field_t = self.context.get_named_struct(typ.name.as_str()).unwrap();
             let res = self.build_dyn_allocate(field_t.size(), "result");
             let field_type = self.compile_exp(self.global_env, &Exp::Symbol(typ.name))?;
             self.build_set_typetag(res, field_type);
@@ -273,10 +261,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         if function.verify_function() {
             Ok(function)
         } else {
-            if log_enabled!(Level::Error) {
-                error!("\ninvalid constructor generated:");
-                self.module.dump_to_stderr();
-            }
+            error!("invalid constructor generated:\n{}", self.module);
 
             unsafe {
                 function.delete_function();
@@ -313,10 +298,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         if function.verify_function() {
             Ok(function)
         } else {
-            if log_enabled!(Level::Error) {
-                error!("\ninvalid function generated:");
-                self.module.dump_to_stderr();
-            }
+            error!("invalid function generated:\n{}", self.module);
 
             unsafe {
                 function.delete_function();
@@ -413,10 +395,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                     )
                 }
                 None => {
-                    bail!(
-                        "unable to find binding for {}",
-                        (*s).as_str()
-                    );
+                    bail!("unable to find binding for {}", (*s).as_str());
                 }
             },
             Exp::Float(n) => {

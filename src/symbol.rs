@@ -7,16 +7,13 @@ use std::sync::Mutex;
 
 use log::trace;
 
-use lazy_static::lazy_static;
-
 use crate::gc;
 use crate::gc::GcBox;
 use crate::gc_global;
 use crate::types::{set_typetag, SYMBOL_T};
 
-lazy_static! {
-    static ref SYMBOLS_MUTEX: Mutex<()> = Mutex::new(());
-}
+#[ctor::ctor]
+static SYMBOLS_MUTEX: Mutex<()> = Mutex::new(());
 gc_global!(SYMBOLS_ROOT: SymbolNode);
 
 // TODO: this whole module is probably not safe when GC kicks in. Symbol captures SymbolNode by
@@ -51,6 +48,7 @@ pub fn symbol(s: &str) -> Symbol {
 }
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub struct Symbol {
     node: &'static SymbolNode,
 }
@@ -85,13 +83,13 @@ impl Hash for Symbol {
 
 impl std::fmt::Debug for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        write!(f, "{}", self)
+        write!(f, "#{}", self)
     }
 }
 
 impl std::fmt::Display for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        write!(f, "#{}", self.as_str())
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -241,5 +239,11 @@ mod tests {
         let a = symbol("hello");
         let b = symbol("other");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_symbol_to_string() {
+        let a = symbol("hello").to_string();
+        assert_eq!(a, "hello");
     }
 }

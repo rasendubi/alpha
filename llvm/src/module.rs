@@ -129,6 +129,10 @@ impl Module {
             core::LLVMDumpModule(self.0);
         }
     }
+
+    pub fn dump(&self) -> LLVMString {
+        unsafe { LLVMString::new(core::LLVMPrintModuleToString(self.0)) }
+    }
 }
 
 impl Clone for Module {
@@ -142,6 +146,18 @@ impl Drop for Module {
         unsafe {
             core::LLVMDisposeModule(self.0);
         }
+    }
+}
+
+impl std::fmt::Debug for Module {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "Module({})", self.dump())
+    }
+}
+
+impl std::fmt::Display for Module {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.dump())
     }
 }
 
