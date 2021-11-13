@@ -115,20 +115,19 @@ impl ParamSpecifier {
 }
 
 unsafe fn dump_value(name: &str, value: AnyPtr) {
-    let mut stdout = STDOUT.lock().unwrap();
-    writeln!(stdout, "{} @ {:#?}", name, value).unwrap();
+    trace!("{} @ {:#?}", name, value);
     if !value.is_null() {
-        writeln!(stdout, "  type= {:p}", type_of(value as AnyPtr)).unwrap();
-        writeln!(stdout, "  f64= {:.5}", *(value as *const f64)).unwrap();
-        writeln!(stdout, "  u64= {}", *(value as *const u64)).unwrap();
-        writeln!(stdout, "  ptr= {:p}", *(value as *const *const ())).unwrap();
+        trace!("  type= {:p}", type_of(value as AnyPtr));
+        trace!("  f64= {:.5}", *(value as *const f64));
+        trace!("  u64= {}", *(value as *const u64));
+        trace!("  ptr= {:p}", *(value as *const *const ()));
 
         let cpl = get_cpl(type_of(value as AnyPtr) as *const DataType);
-        writeln!(stdout, "  cpl= [").unwrap();
+        trace!("  cpl= [");
         for c in cpl {
-            writeln!(stdout, "    {:p}", c).unwrap();
+            trace!("    {:p}", c);
         }
-        writeln!(stdout, "  ]").unwrap();
+        trace!("  ]");
     }
 }
 

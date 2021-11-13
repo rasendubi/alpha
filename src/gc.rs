@@ -114,7 +114,7 @@ impl Block {
     }
 }
 
-const BLOCK_SIZE: usize = 4 * 1024;
+const BLOCK_SIZE: usize = 1024 * 4 * 1024;
 const BLOCK_ALIGN: usize = 4 * 1024;
 
 pub unsafe fn allocate(size: usize) -> *mut u8 {

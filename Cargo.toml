@@ -16,6 +16,9 @@ ctor = "0.1.21"
 paste = "1.0.6"
 lazy_static = "1.4.0"
 
+[dev-dependencies]
+serial_test = "0.5.1"
+
 [workspace]
 members = [
   "llvm",
