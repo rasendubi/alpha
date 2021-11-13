@@ -10,5 +10,5 @@ mod sexp;
 mod symbol;
 mod types;
 
-pub use execution_session::ExecutionSession;
+pub use execution_session::{set_stdout, ExecutionSession};
 pub use init::init;

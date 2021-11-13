@@ -1,4 +1,6 @@
 use std::error::Error;
+use std::io::Write;
+use std::sync::Mutex;
 
 use log::{error, trace};
 
@@ -19,6 +21,14 @@ use crate::parser::Parser;
 use crate::symbol::{symbol, Symbol};
 use crate::types::*;
 use crate::types::{get_typetag, set_typetag, AlphaType, AlphaTypeDef};
+
+#[ctor::ctor]
+static STDOUT: Mutex<Box<dyn Write + Sync + Send>> = Mutex::new(Box::new(std::io::stdout()));
+
+pub fn set_stdout(out: Box<dyn Write + Sync + Send>) {
+    let mut stdout = STDOUT.lock().unwrap();
+    *stdout = out;
+}
 
 unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
     gc::allocate(size as usize)
@@ -105,19 +115,20 @@ impl ParamSpecifier {
 }
 
 unsafe fn dump_value(name: &str, value: AnyPtr) {
-    println!("{} @ {:#?}", name, value);
+    let mut stdout = STDOUT.lock().unwrap();
+    writeln!(stdout, "{} @ {:#?}", name, value).unwrap();
     if !value.is_null() {
-        println!("  type= {:p}", type_of(value as AnyPtr));
-        println!("  f64= {:.5}", *(value as *const f64));
-        println!("  u64= {}", *(value as *const u64));
-        println!("  ptr= {:p}", *(value as *const *const ()));
+        writeln!(stdout, "  type= {:p}", type_of(value as AnyPtr)).unwrap();
+        writeln!(stdout, "  f64= {:.5}", *(value as *const f64)).unwrap();
+        writeln!(stdout, "  u64= {}", *(value as *const u64)).unwrap();
+        writeln!(stdout, "  ptr= {:p}", *(value as *const *const ())).unwrap();
 
         let cpl = get_cpl(type_of(value as AnyPtr) as *const DataType);
-        println!("  cpl= [");
+        writeln!(stdout, "  cpl= [").unwrap();
         for c in cpl {
-            println!("    {:p}", c);
+            writeln!(stdout, "    {:p}", c).unwrap();
         }
-        println!("  ]");
+        writeln!(stdout, "  ]").unwrap();
     }
 }
 
@@ -146,26 +157,30 @@ unsafe extern "C" fn alpha_type_of(_n_args: i64, args: *const AnyPtr) -> AnyPtr 
 }
 
 unsafe extern "C" fn alpha_print_i64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let mut stdout = STDOUT.lock().unwrap();
     let x = *(*args.add(1) as *const i64);
-    println!("{}", x);
+    writeln!(stdout, "{}", x).unwrap();
     std::ptr::null()
 }
 
 unsafe extern "C" fn alpha_print_f64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let mut stdout = STDOUT.lock().unwrap();
     let x = *(*args.add(1) as *const f64);
-    println!("{}", x);
+    writeln!(stdout, "{}", x).unwrap();
     std::ptr::null()
 }
 
 unsafe extern "C" fn alpha_print_datatype(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let mut stdout = STDOUT.lock().unwrap();
     let x = &*(*args.add(1) as *const DataType);
-    println!("{:#?}", x);
+    writeln!(stdout, "{:#?}", x).unwrap();
     std::ptr::null()
 }
 
 unsafe extern "C" fn alpha_print_abstracttype(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let mut stdout = STDOUT.lock().unwrap();
     let x = &*(*args.add(1) as *const AbstractType);
-    println!("{:?}", x);
+    writeln!(stdout, "{:?}", x).unwrap();
     std::ptr::null()
 }
 
@@ -1033,7 +1048,9 @@ impl<'ctx> ExecutionSession<'ctx> {
         let fun = self.jit.lookup::<GenericFn>(&name)?;
         unsafe {
             let result = fun(0, std::ptr::null());
-            dump_value("result", result);
+            if !result.is_null() {
+                dump_value("result", result);
+            }
         }
 
         // This was just an anonymous function. We can unload the module as it is no longer
