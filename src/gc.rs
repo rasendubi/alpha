@@ -3,6 +3,48 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use log::trace;
 
+pub struct GcBox<T> {
+    ptr: AtomicPtr<T>,
+}
+
+impl<T> GcBox<T> {
+    pub const fn new() -> GcBox<T> {
+        GcBox {
+            ptr: AtomicPtr::new(std::ptr::null_mut()),
+        }
+    }
+
+    pub fn as_ref(&self) -> &AtomicPtr<T> {
+        &self.ptr
+    }
+
+    pub fn load(&self) -> *mut T {
+        self.ptr.load(Ordering::SeqCst)
+    }
+
+    pub fn store(&self, ptr: *mut T) {
+        self.ptr.store(ptr, Ordering::SeqCst);
+    }
+}
+
+pub struct GcRoot<'a> {
+    ptr: &'a AtomicPtr<()>,
+}
+
+unsafe impl<'a> Sync for GcRoot<'a> {}
+
+impl<'a> GcRoot<'a> {
+    pub fn new<T>(b: &'a GcBox<T>) -> Self {
+        trace!("New gc root at: {:p}", b);
+        GcRoot {
+            ptr: unsafe {
+                // cast &'a AtomicPtr<T> to &'a AtomicPtr<()>
+                std::mem::transmute(&b.ptr)
+            },
+        }
+    }
+}
+
 static mut BLOCK: Option<Block> = None;
 
 struct Block {
@@ -27,7 +69,7 @@ impl Block {
         }
     }
 
-    fn bump(&mut self, size: usize) -> Option<*mut u8> {
+    fn bump(&self, size: usize) -> Option<*mut u8> {
         let res = self
             .cur
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
@@ -51,9 +93,10 @@ pub unsafe fn init() {
 }
 
 pub unsafe fn allocate(size: usize) -> *mut u8 {
-        let start = BLOCK.as_mut().unwrap().bump(size + 8 /* typetag */);
-        let start = start.unwrap_or_else(|| panic!("gc: out of memory"));
-        let result = start.add(8 /* typetag */);
-        trace!("allocate({}) = {:#?}", size, result);
-        result
+    // TODO: handle alignment
+    let start = BLOCK.as_mut().unwrap().bump(size + 8 /* typetag */);
+    let start = start.unwrap_or_else(|| panic!("gc: out of memory"));
+    let result = start.add(8 /* typetag */);
+    trace!("allocate({}) = {:#?}", size, result);
+    result
 }

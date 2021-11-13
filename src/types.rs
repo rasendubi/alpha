@@ -1,7 +1,14 @@
 use std::error::Error;
+use std::mem::size_of;
+use std::sync::Once;
+
+use ctor::ctor;
+use paste::paste;
 
 use crate::env::Env;
 use crate::exp::{TypeDefinition, TypeSpecifier};
+use crate::gc;
+use crate::gc::{GcBox, GcRoot};
 use crate::symbol::Symbol;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -111,4 +118,121 @@ impl AlphaTypeDef {
         };
         Some(n)
     }
+}
+
+pub type AnyPtr = *const u64;
+pub type AnyPtrMut = *mut u64;
+pub type GenericFn = unsafe extern "C" fn(i64, *const AnyPtr) -> AnyPtr;
+
+// type DataType = { size: i64, n_ptrs: i64, methods: i64 }
+#[derive(Debug)]
+#[repr(C)]
+pub struct DataType {
+    pub supertype: *const AbstractType,
+    pub size: u64,
+    pub n_ptrs: u64,
+    pub methods: Vec<Method>,
+    pub name: String,
+}
+
+// type DataType = { size: i64, n_ptrs: i64, methods: i64 }
+#[derive(Debug)]
+#[repr(C)]
+pub struct AbstractType {
+    pub supertype: *const AbstractType,
+    pub name: String,
+}
+
+#[derive(Debug)]
+pub enum ParamSpecifier {
+    Eq(AnyPtr),
+    SubtypeOf(AnyPtr),
+}
+
+#[derive(Debug)]
+pub struct Method {
+    pub signature: Vec<ParamSpecifier>,
+    // compiled instance of the method
+    pub instance: GenericFn,
+}
+
+macro_rules! gc_global {
+    ( pub $i:ident : $t:ty ) => {
+        pub static $i: GcBox<$t> = GcBox::new();
+        paste! {
+            #[used]
+            #[ctor]
+            static [<$i _ROOT>]: GcRoot<'static> = GcRoot::new(&ANY_T);
+        }
+    };
+    ( $i:ident : $t:ty ) => {
+        static $i: GcBox<$t> = GcBox::new();
+        paste! {
+            #[used]
+            #[ctor]
+            static [<$i _ROOT>]: GcRoot<'static> = GcRoot::new(&ANY_T);
+        }
+    };
+}
+
+gc_global!(pub ANY_T: AbstractType);
+gc_global!(pub TYPE_T: AbstractType);
+gc_global!(pub DATATYPE_T: DataType);
+gc_global!(pub ABSTRACTTYPE_T: DataType);
+
+static INIT: Once = Once::new();
+
+pub fn init() {
+    INIT.call_once(|| unsafe {
+        {
+            let any_t = gc::allocate(size_of::<AbstractType>()) as *mut AbstractType;
+            ANY_T.store(any_t);
+            *any_t = AbstractType {
+                supertype: any_t,
+                name: "Any".to_string(),
+            };
+        }
+
+        {
+            let type_t = gc::allocate(size_of::<AbstractType>()) as *mut AbstractType;
+            TYPE_T.store(type_t);
+            *type_t = AbstractType {
+                supertype: ANY_T.load(),
+                name: "Type".to_string(),
+            };
+        }
+
+        {
+            let datatype_t = gc::allocate(size_of::<DataType>()) as *mut DataType;
+            DATATYPE_T.store(datatype_t);
+            set_typetag(datatype_t, datatype_t);
+            *datatype_t = DataType {
+                supertype: TYPE_T.load(),
+                size: std::mem::size_of::<DataType>() as u64,
+                n_ptrs: 0,
+                methods: Vec::new(),
+                name: "DataType".to_string(),
+            };
+        }
+
+        {
+            let abstracttype_t = gc::allocate(size_of::<DataType>()) as *mut DataType;
+            set_typetag(abstracttype_t, DATATYPE_T.load());
+            *abstracttype_t = DataType {
+                supertype: TYPE_T.load(),
+                size: std::mem::size_of::<AbstractType>() as u64,
+                n_ptrs: 0,
+                methods: Vec::new(),
+                name: "AbstractType".to_string(),
+            };
+
+            set_typetag(ANY_T.load(), abstracttype_t);
+            set_typetag(TYPE_T.load(), abstracttype_t);
+        }
+    });
+}
+
+unsafe fn set_typetag<T>(ptr: *mut T, typetag: *const DataType) {
+    let typetag_ptr = (ptr as *mut u64).sub(1) as *mut *const DataType;
+    *typetag_ptr = typetag;
 }

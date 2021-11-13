@@ -17,45 +17,11 @@ use crate::exp::{lower_sexp, Exp};
 use crate::gc;
 use crate::parser::Parser;
 use crate::symbol::{Symbol, SymbolInterner};
+use crate::types::*;
 use crate::types::{AlphaType, AlphaTypeDef};
 
 unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
     gc::allocate(size as usize)
-}
-
-type AnyPtr = *const u64;
-type AnyPtrMut = *mut u64;
-type GenericFn = unsafe extern "C" fn(i64, *const AnyPtr) -> AnyPtr;
-
-// type DataType = { size: i64, n_ptrs: i64, methods: i64 }
-#[derive(Debug)]
-#[repr(C)]
-struct DataType {
-    supertype: *const AbstractType,
-    size: u64,
-    n_ptrs: u64,
-    methods: Vec<Method>,
-    name: String,
-}
-
-#[derive(Debug)]
-#[repr(C)]
-struct AbstractType {
-    supertype: *const AbstractType,
-    name: String,
-}
-
-#[derive(Debug)]
-enum ParamSpecifier {
-    Eq(AnyPtr),
-    SubtypeOf(AnyPtr),
-}
-
-#[derive(Debug)]
-struct Method {
-    signature: Vec<ParamSpecifier>,
-    // compiled instance of the method
-    instance: GenericFn,
 }
 
 impl Method {
@@ -368,7 +334,8 @@ impl<'ctx> ExecutionSession<'ctx> {
             llvm_sys::target::LLVM_InitializeNativeTarget();
             llvm_sys::target::LLVM_InitializeNativeAsmPrinter();
 
-            gc::init();
+            crate::gc::init();
+            crate::types::init();
         }
 
         let context = ThreadSafeContext::new();
@@ -554,72 +521,33 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.globals.add_function("dispatch", fn_t);
         self.jit.define_symbol("dispatch", dispatch as usize)?;
 
-        let any = unsafe {
-            let any = gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType;
-            *any = AbstractType {
-                supertype: any,
-                name: "Any".to_string(),
-            };
-            any
-        };
-        let type_ = unsafe {
-            let type_ =
-                gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType;
-            *type_ = AbstractType {
-                supertype: any,
-                name: "Type".to_string(),
-            };
-            type_
-        };
-
-        let datatype = unsafe {
-            let datatype = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
-            // Type is self-referencial:
-            // typeof(DataType) == DataType
-            set_typetag(datatype, datatype);
-            *datatype = DataType {
-                supertype: type_,
-                size: std::mem::size_of::<DataType>() as u64,
-                n_ptrs: 0,
-                methods: Vec::new(),
-                name: "DataType".to_string(),
-            };
-            datatype
-        };
-        self.inject_global(&self.globals, "DataType", datatype_ptr_t, datatype);
+        self.globals.add_global("DataType", datatype_ptr_t);
+        self.jit
+            .define_symbol("DataType", DATATYPE_T.as_ref() as *const _ as usize)?;
         self.global_env.insert(
             self.interner.intern("DataType"),
             EnvValue::Global("DataType".to_string()),
         );
 
-        let abstracttype = unsafe {
-            let abstracttype = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
-            set_typetag(abstracttype, datatype);
-            *abstracttype = DataType {
-                supertype: type_,
-                size: std::mem::size_of::<AbstractType>() as u64,
-                n_ptrs: 0,
-                methods: Vec::new(),
-                name: "AbstractType".to_string(),
-            };
-            abstracttype
-        };
-        self.inject_global(&self.globals, "AbstractType", datatype_ptr_t, abstracttype);
+        self.globals.add_global("AbstractType", datatype_ptr_t);
+        self.jit
+            .define_symbol("AbstractType", ABSTRACTTYPE_T.as_ref() as *const _ as usize)?;
         self.global_env.insert(
             self.interner.intern("AbstractType"),
             EnvValue::Global("AbstractType".to_string()),
         );
 
-        unsafe {
-            set_typetag(any, abstracttype);
-            set_typetag(type_, abstracttype);
-        }
-        self.inject_global(&self.globals, "Any", abstracttype_ptr_t, any);
+        self.globals.add_global("Any", abstracttype_ptr_t);
+        self.jit
+            .define_symbol("Any", ANY_T.as_ref() as *const _ as usize)?;
         self.global_env.insert(
             self.interner.intern("Any"),
             EnvValue::Global("Any".to_string()),
         );
-        self.inject_global(&self.globals, "Type", abstracttype_ptr_t, type_);
+
+        self.globals.add_global("Type", abstracttype_ptr_t);
+        self.jit
+            .define_symbol("Type", TYPE_T.as_ref() as *const _ as usize)?;
         self.global_env.insert(
             self.interner.intern("Type"),
             EnvValue::Global("Type".to_string()),
@@ -658,8 +586,8 @@ impl<'ctx> ExecutionSession<'ctx> {
             type_of_t,
             Method {
                 signature: vec![
-                    ParamSpecifier::SubtypeOf(any as AnyPtr),
-                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
                 ],
                 instance: alpha_type_of,
             },
@@ -673,7 +601,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             f64_mul_t,
             Method {
                 signature: vec![
-                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
                     ParamSpecifier::SubtypeOf(f64_t as AnyPtr),
                     ParamSpecifier::SubtypeOf(f64_t as AnyPtr),
                 ],
@@ -686,7 +614,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             i64_mul_t,
             Method {
                 signature: vec![
-                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
                     ParamSpecifier::SubtypeOf(i64_t as AnyPtr),
                     ParamSpecifier::SubtypeOf(i64_t as AnyPtr),
                 ],
@@ -700,7 +628,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             print_t,
             Method {
                 signature: vec![
-                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
                     ParamSpecifier::SubtypeOf(i64_t as AnyPtr),
                 ],
                 instance: alpha_print_i64,
@@ -710,7 +638,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             print_t,
             Method {
                 signature: vec![
-                    ParamSpecifier::SubtypeOf(any as AnyPtr),
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
                     ParamSpecifier::SubtypeOf(f64_t as AnyPtr),
                 ],
                 instance: alpha_print_f64,
@@ -720,8 +648,8 @@ impl<'ctx> ExecutionSession<'ctx> {
             print_t,
             Method {
                 signature: vec![
-                    ParamSpecifier::SubtypeOf(any as AnyPtr),
-                    ParamSpecifier::SubtypeOf(datatype as AnyPtr),
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
+                    ParamSpecifier::SubtypeOf(DATATYPE_T.load() as AnyPtr),
                 ],
                 instance: alpha_print_datatype,
             },
@@ -730,8 +658,8 @@ impl<'ctx> ExecutionSession<'ctx> {
             print_t,
             Method {
                 signature: vec![
-                    ParamSpecifier::SubtypeOf(any as AnyPtr),
-                    ParamSpecifier::SubtypeOf(abstracttype as AnyPtr),
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
+                    ParamSpecifier::SubtypeOf(ABSTRACTTYPE_T.load() as AnyPtr),
                 ],
                 instance: alpha_print_abstracttype,
             },
