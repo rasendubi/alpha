@@ -157,6 +157,7 @@ gc_global!(pub ANY_T: AbstractType);
 gc_global!(pub TYPE_T: AbstractType);
 gc_global!(pub DATATYPE_T: DataType);
 gc_global!(pub ABSTRACTTYPE_T: DataType);
+gc_global!(pub SYMBOL_T: DataType);
 
 static INIT: Once = Once::new();
 
@@ -186,7 +187,7 @@ pub fn init() {
             set_typetag(datatype_t, datatype_t);
             *datatype_t = DataType {
                 supertype: TYPE_T.load(),
-                size: std::mem::size_of::<DataType>() as u64,
+                size: size_of::<DataType>() as u64,
                 n_ptrs: 0,
                 methods: Vec::new(),
                 name: "DataType".to_string(),
@@ -198,7 +199,7 @@ pub fn init() {
             set_typetag(abstracttype_t, DATATYPE_T.load());
             *abstracttype_t = DataType {
                 supertype: TYPE_T.load(),
-                size: std::mem::size_of::<AbstractType>() as u64,
+                size: size_of::<AbstractType>() as u64,
                 n_ptrs: 0,
                 methods: Vec::new(),
                 name: "AbstractType".to_string(),
@@ -207,10 +208,27 @@ pub fn init() {
             set_typetag(ANY_T.load(), abstracttype_t);
             set_typetag(TYPE_T.load(), abstracttype_t);
         }
+
+        {
+            let symbol_t = gc::allocate(size_of::<DataType>()) as *mut DataType;
+            set_typetag(symbol_t, DATATYPE_T.load());
+            *symbol_t = DataType {
+                supertype: ANY_T.load(),
+                size: 0, // dynamically-sized
+                n_ptrs: 0,
+                methods: Vec::new(),
+                name: "Symbol".to_string(),
+            }
+        }
     });
 }
 
-unsafe fn set_typetag<T>(ptr: *mut T, typetag: *const DataType) {
-    let typetag_ptr = (ptr as *mut u64).sub(1) as *mut *const DataType;
-    *typetag_ptr = typetag;
+pub unsafe fn set_typetag<T>(ptr: *mut T, typetag: *const DataType) {
+    *typetag_ptr(ptr) = typetag;
+}
+pub unsafe fn get_typetag<T>(ptr: *const T) -> *const DataType {
+    *typetag_ptr(ptr)
+}
+unsafe fn typetag_ptr<T>(ptr: *const T) -> *mut *const DataType {
+    (ptr as *mut *const DataType).sub(1)
 }

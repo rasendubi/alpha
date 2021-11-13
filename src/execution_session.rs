@@ -18,7 +18,7 @@ use crate::gc;
 use crate::parser::Parser;
 use crate::symbol::{symbol, Symbol};
 use crate::types::*;
-use crate::types::{AlphaType, AlphaTypeDef};
+use crate::types::{get_typetag, set_typetag, AlphaType, AlphaTypeDef};
 
 unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
     gc::allocate(size as usize)
@@ -119,15 +119,6 @@ unsafe fn dump_value(name: &str, value: AnyPtr) {
         }
         println!("  ]");
     }
-}
-
-unsafe fn set_typetag<T>(ptr: *mut T, typetag: *const DataType) {
-    let typetag_ptr = (ptr as *mut u64).sub(1) as *mut *const DataType;
-    *typetag_ptr = typetag;
-}
-unsafe fn get_typetag<T>(ptr: *const T) -> *const DataType {
-    let typetag_ptr = (ptr as *mut u64).sub(1) as *mut *const DataType;
-    *typetag_ptr
 }
 
 unsafe fn type_of(x: AnyPtr) -> *const DataType {

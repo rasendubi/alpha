@@ -12,6 +12,7 @@ use lazy_static::lazy_static;
 use crate::gc;
 use crate::gc::GcBox;
 use crate::gc_global;
+use crate::types::{set_typetag, SYMBOL_T};
 
 lazy_static! {
     static ref SYMBOLS_MUTEX: Mutex<()> = Mutex::new(());
@@ -121,6 +122,7 @@ impl SymbolNode {
         unsafe {
             let size = s.len();
             let ptr = gc::allocate(size_of::<SymbolNode>() + size + 1) as *mut SymbolNode;
+            set_typetag(ptr, SYMBOL_T.load());
             let hash = Self::str_hash(s);
             *ptr = SymbolNode {
                 hash,
