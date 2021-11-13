@@ -3,6 +3,27 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use log::trace;
 
+#[macro_export]
+macro_rules! gc_global {
+    ( pub $i:ident : $t:ty ) => {
+        pub static $i: $crate::gc::GcBox<$t> = $crate::gc::GcBox::new();
+        paste::paste! {
+            #[used]
+            #[ctor::ctor]
+            static [<$i _ROOT>]: $crate::gc::GcRoot<'static> = $crate::gc::GcRoot::new(&$i);
+        }
+    };
+    ( $i:ident : $t:ty ) => {
+        static $i: $crate::gc::GcBox<$t> = $crate::gc::GcBox::new();
+        paste::paste! {
+            #[used]
+            #[ctor::ctor]
+            static [<$i _ROOT>]: $crate::gc::GcRoot<'static> = $crate::gc::GcRoot::new(&$i);
+        }
+    };
+}
+
+#[derive(Debug)]
 pub struct GcBox<T> {
     ptr: AtomicPtr<T>,
 }
@@ -27,6 +48,7 @@ impl<T> GcBox<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct GcRoot<'a> {
     ptr: &'a AtomicPtr<()>,
 }
@@ -45,7 +67,8 @@ impl<'a> GcRoot<'a> {
     }
 }
 
-static mut BLOCK: Option<Block> = None;
+#[ctor::ctor]
+static BLOCK: Block = Block::new(BLOCK_SIZE, BLOCK_ALIGN);
 
 struct Block {
     // required to deallocate the block later
@@ -89,12 +112,12 @@ const BLOCK_ALIGN: usize = 4 * 1024;
 
 pub unsafe fn init() {
     // TODO: move this into allocate and protect with a global lock
-    BLOCK = Some(Block::new(BLOCK_SIZE, BLOCK_ALIGN));
+    // BLOCK = Some(Block::new(BLOCK_SIZE, BLOCK_ALIGN));
 }
 
 pub unsafe fn allocate(size: usize) -> *mut u8 {
     // TODO: handle alignment
-    let start = BLOCK.as_mut().unwrap().bump(size + 8 /* typetag */);
+    let start = BLOCK.bump(size + 8 /* typetag */);
     let start = start.unwrap_or_else(|| panic!("gc: out of memory"));
     let result = start.add(8 /* typetag */);
     trace!("allocate({}) = {:#?}", size, result);

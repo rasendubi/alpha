@@ -2,13 +2,10 @@ use std::error::Error;
 use std::mem::size_of;
 use std::sync::Once;
 
-use ctor::ctor;
-use paste::paste;
-
 use crate::env::Env;
 use crate::exp::{TypeDefinition, TypeSpecifier};
 use crate::gc;
-use crate::gc::{GcBox, GcRoot};
+use crate::gc_global;
 use crate::symbol::Symbol;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -154,25 +151,6 @@ pub struct Method {
     pub signature: Vec<ParamSpecifier>,
     // compiled instance of the method
     pub instance: GenericFn,
-}
-
-macro_rules! gc_global {
-    ( pub $i:ident : $t:ty ) => {
-        pub static $i: GcBox<$t> = GcBox::new();
-        paste! {
-            #[used]
-            #[ctor]
-            static [<$i _ROOT>]: GcRoot<'static> = GcRoot::new(&ANY_T);
-        }
-    };
-    ( $i:ident : $t:ty ) => {
-        static $i: GcBox<$t> = GcBox::new();
-        paste! {
-            #[used]
-            #[ctor]
-            static [<$i _ROOT>]: GcRoot<'static> = GcRoot::new(&ANY_T);
-        }
-    };
 }
 
 gc_global!(pub ANY_T: AbstractType);

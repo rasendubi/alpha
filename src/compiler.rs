@@ -14,11 +14,10 @@ use crate::env::Env;
 use crate::execution_session::EnvValue;
 use crate::exp;
 use crate::exp::Exp;
-use crate::symbol::SymbolInterner;
 use crate::types::{AlphaType, AlphaTypeDef};
+use crate::symbol::symbol;
 
 pub struct Compiler<'a, 'ctx> {
-    interner: &'a mut SymbolInterner,
     context: &'ctx Context,
     builder: Builder,
     module: &'a Module,
@@ -45,14 +44,12 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     /// - `i64` — type for integer literals
     /// - `f64` — type for floating point literals
     pub fn compile(
-        interner: &'a mut SymbolInterner,
         context: &'ctx Context,
         module: &'a Module,
         env: &'a Env<'a, EnvValue>,
         f: &exp::Function,
     ) -> Result<Value, Box<dyn Error>> {
         let mut compiler = Compiler {
-            interner,
             context,
             builder: context.create_builder(),
             module,
@@ -63,14 +60,12 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     }
 
     pub fn compile_constructor(
-        interner: &'a mut SymbolInterner,
         context: &'ctx Context,
         module: &'a Module,
         env: &'a Env<'a, EnvValue>,
         def: &AlphaType,
     ) -> Result<Value, Box<dyn Error>> {
         let mut compiler = Compiler {
-            interner,
             context,
             builder: context.create_builder(),
             module,
@@ -81,7 +76,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     }
 
     pub fn compile_accessor(
-        interner: &'a mut SymbolInterner,
         context: &'ctx Context,
         module: &'a Module,
         env: &'a Env<'a, EnvValue>,
@@ -90,7 +84,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         name: &str,
     ) -> Result<Value, Box<dyn Error>> {
         let mut compiler = Compiler {
-            interner,
             context,
             builder: context.create_builder(),
             module,
@@ -161,7 +154,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
         let t = self
             .context
-            .get_named_struct(self.interner.resolve(def.name).unwrap())
+            .get_named_struct(def.name.as_str())
             .unwrap();
         let res = self.build_dyn_allocate(t.size(), "result");
 
@@ -179,7 +172,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             let value = if typ.typedef.is_inlinable() {
                 let field_t = self
                     .context
-                    .get_named_struct(self.interner.resolve(typ.name).unwrap())
+                    .get_named_struct(typ.name.as_str())
                     .unwrap();
                 let field_as_t = self.builder.build_pointer_cast(
                     value,
@@ -224,10 +217,10 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
         let (_name, typ) = &fields[i];
 
-        let this_s = self.interner.intern("this");
+        let this_s = symbol("this");
 
         let proto = exp::FunctionPrototype {
-            name: self.interner.intern(name),
+            name: symbol(name),
             params: vec![exp::FunctionParameter {
                 name: this_s,
                 typ: def.name,
@@ -242,7 +235,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
         let t = self
             .context
-            .get_named_struct(self.interner.resolve(def.name).unwrap())
+            .get_named_struct(def.name.as_str())
             .unwrap();
 
         let this = self.compile_exp(&env, &Exp::Symbol(this_s))?;
@@ -259,7 +252,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             // box value
             let field_t = self
                 .context
-                .get_named_struct(self.interner.resolve(typ.name).unwrap())
+                .get_named_struct(typ.name.as_str())
                 .unwrap();
             let res = self.build_dyn_allocate(field_t.size(), "result");
             let field_type = self.compile_exp(self.global_env, &Exp::Symbol(typ.name))?;
@@ -336,7 +329,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         &mut self,
         proto: &exp::FunctionPrototype,
     ) -> Result<Value, Box<dyn Error>> {
-        let name = self.interner.resolve(proto.name).unwrap();
+        let name = proto.name.as_str();
 
         let ptr_t = self
             .context
@@ -386,7 +379,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         let mut env = Env::new(Some(env));
         for (i, param) in proto.params.iter().enumerate() {
             let param_symbol = param.name;
-            let param_name = self.interner.resolve(param_symbol).unwrap();
+            let param_name = param_symbol.as_str();
             let p =
                 self.builder
                     .build_gep(args, &[i64_t.const_int((i + 1) as u64, false)], param_name);
@@ -422,7 +415,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 None => {
                     bail!(
                         "unable to find binding for {}",
-                        self.interner.resolve(*s).unwrap()
+                        (*s).as_str()
                     );
                 }
             },
@@ -436,7 +429,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 let value = self.context.f64_type().const_float(*n);
                 self.builder.build_store(fptr, value);
 
-                let f64_symbol = self.interner.intern("f64");
+                let f64_symbol = symbol("f64");
                 let f64t = self.compile_exp(env, &Exp::Symbol(f64_symbol))?;
                 self.build_set_typetag(ptr, f64t);
 
@@ -454,7 +447,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 let value = self.context.int_type(64).const_int(*n as u64, true);
                 self.builder.build_store(iptr, value);
 
-                let i64_symbol = self.interner.intern("i64");
+                let i64_symbol = symbol("i64");
                 let i64t = self.compile_exp(env, &Exp::Symbol(i64_symbol))?;
                 self.build_set_typetag(ptr, i64t);
 

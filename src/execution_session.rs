@@ -16,7 +16,7 @@ use crate::exp;
 use crate::exp::{lower_sexp, Exp};
 use crate::gc;
 use crate::parser::Parser;
-use crate::symbol::{Symbol, SymbolInterner};
+use crate::symbol::{symbol, Symbol};
 use crate::types::*;
 use crate::types::{AlphaType, AlphaTypeDef};
 
@@ -320,7 +320,6 @@ pub struct ExecutionSession<'ctx> {
     /// itself is never passed into JIT.
     globals: Module,
     jit: LLJIT,
-    interner: SymbolInterner,
     global_env: Env<'ctx, EnvValue>,
     types: Env<'ctx, AlphaType>,
     // Context should be the last field, so that other fields (globals, jit) are disposed _before_
@@ -342,14 +341,12 @@ impl<'ctx> ExecutionSession<'ctx> {
         let globals = context.context().create_module("globals");
         let jit = LLJITBuilder::new().build().unwrap();
 
-        let interner = SymbolInterner::new();
         let global_env = Env::new(None);
         let types = Env::new(None);
 
         let mut es = ExecutionSession {
             counter: 0,
             context,
-            interner,
             global_env,
             jit,
             globals,
@@ -432,66 +429,60 @@ impl<'ctx> ExecutionSession<'ctx> {
         let abstracttype_ptr_t = abstracttype_t.pointer_type(AddressSpace::Generic);
 
         self.types.insert(
-            self.interner.intern("Any"),
+            symbol("Any"),
             AlphaType {
-                name: self.interner.intern("Any"),
-                supertype: self.interner.intern("Any"),
+                name: symbol("Any"),
+                supertype: symbol("Any"),
                 typedef: AlphaTypeDef::Abstract,
             },
         );
         let type_typedef = AlphaType {
-            name: self.interner.intern("Type"),
-            supertype: self.interner.intern("Any"),
+            name: symbol("Type"),
+            supertype: symbol("Any"),
             typedef: AlphaTypeDef::Abstract,
         };
-        self.types
-            .insert(self.interner.intern("Type"), type_typedef.clone());
+        self.types.insert(symbol("Type"), type_typedef.clone());
         let abstracttype_typedef = AlphaType {
-            name: self.interner.intern("AbstractType"),
-            supertype: self.interner.intern("Type"),
+            name: symbol("AbstractType"),
+            supertype: symbol("Type"),
             typedef: AlphaTypeDef::Struct {
                 fields: vec![(
-                    self.interner.intern("supertype"),
+                    symbol("supertype"),
                     // this is supertype: Type, but in reality it should be supertype: AbstractType
                     type_typedef,
                 )],
             },
         };
-        self.types.insert(
-            self.interner.intern("AbstractType"),
-            abstracttype_typedef.clone(),
-        );
+        self.types
+            .insert(symbol("AbstractType"), abstracttype_typedef.clone());
         let datatype_typedef = AlphaType {
-            name: self.interner.intern("DataType"),
-            supertype: self.interner.intern("Type"),
+            name: symbol("DataType"),
+            supertype: symbol("Type"),
             typedef: AlphaTypeDef::Struct {
                 fields: vec![
+                    (symbol("supertype"), abstracttype_typedef.clone()),
                     (
-                        self.interner.intern("supertype"),
-                        abstracttype_typedef.clone(),
-                    ),
-                    (
-                        self.interner.intern("size"),
+                        symbol("size"),
                         AlphaType {
-                            name: self.interner.intern("i64"),
-                            supertype: self.interner.intern("Number"),
+                            name: symbol("i64"),
+                            supertype: symbol("Number"),
                             typedef: AlphaTypeDef::Int(64),
                         },
                     ),
                     (
-                        self.interner.intern("n_ptrs"),
+                        symbol("n_ptrs"),
                         AlphaType {
-                            name: self.interner.intern("i64"),
-                            supertype: self.interner.intern("Number"),
+                            name: symbol("i64"),
+                            supertype: symbol("Number"),
                             typedef: AlphaTypeDef::Int(64),
                         },
                     ),
                     (
-                        self.interner.intern("methods"),
+                        symbol("methods"),
                         AlphaType {
                             // actually: pointer to Vec<Method>
-                            name: self.interner.intern("i64"),
-                            supertype: self.interner.intern("Number"),
+                            name: symbol("i64"),
+                            supertype: symbol("Number"),
                             typedef: AlphaTypeDef::Int(64),
                         },
                     ),
@@ -499,7 +490,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             },
         };
         self.types
-            .insert(self.interner.intern("DataType"), datatype_typedef.clone());
+            .insert(symbol("DataType"), datatype_typedef.clone());
 
         let any_ptr_t = any_t.pointer_type(AddressSpace::Generic);
         let i64_t = self.context.context().int_type(64);
@@ -524,34 +515,28 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.globals.add_global("DataType", datatype_ptr_t);
         self.jit
             .define_symbol("DataType", DATATYPE_T.as_ref() as *const _ as usize)?;
-        self.global_env.insert(
-            self.interner.intern("DataType"),
-            EnvValue::Global("DataType".to_string()),
-        );
+        self.global_env
+            .insert(symbol("DataType"), EnvValue::Global("DataType".to_string()));
 
         self.globals.add_global("AbstractType", datatype_ptr_t);
         self.jit
             .define_symbol("AbstractType", ABSTRACTTYPE_T.as_ref() as *const _ as usize)?;
         self.global_env.insert(
-            self.interner.intern("AbstractType"),
+            symbol("AbstractType"),
             EnvValue::Global("AbstractType".to_string()),
         );
 
         self.globals.add_global("Any", abstracttype_ptr_t);
         self.jit
             .define_symbol("Any", ANY_T.as_ref() as *const _ as usize)?;
-        self.global_env.insert(
-            self.interner.intern("Any"),
-            EnvValue::Global("Any".to_string()),
-        );
+        self.global_env
+            .insert(symbol("Any"), EnvValue::Global("Any".to_string()));
 
         self.globals.add_global("Type", abstracttype_ptr_t);
         self.jit
             .define_symbol("Type", TYPE_T.as_ref() as *const _ as usize)?;
-        self.global_env.insert(
-            self.interner.intern("Type"),
-            EnvValue::Global("Type".to_string()),
-        );
+        self.global_env
+            .insert(symbol("Type"), EnvValue::Global("Type".to_string()));
 
         // Add a copy of the globals module to jit, so globals with initializers are defined.
         self.load_module(self.globals.clone())?;
@@ -580,7 +565,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let i64_t = unsafe { *self.jit.lookup::<*const *const DataType>("i64")? };
         let f64_t = unsafe { *self.jit.lookup::<*const *const DataType>("f64")? };
 
-        let type_of_s = self.interner.intern("type_of");
+        let type_of_s = symbol("type_of");
         let type_of_t = self.define_function(type_of_s)?;
         self.function_add_method(
             type_of_t,
@@ -595,7 +580,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         // stdlib.ll defines primitive operations
         self.load_ir_module("stdlib.ll", STDLIB_LL)?;
-        let f64_mul_s = self.interner.intern("f64_mul");
+        let f64_mul_s = symbol("f64_mul");
         let f64_mul_t = self.define_function(f64_mul_s)?;
         self.function_add_method(
             f64_mul_t,
@@ -608,7 +593,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                 instance: self.jit.lookup::<GenericFn>("f64_mul")?,
             },
         );
-        let i64_mul_s = self.interner.intern("i64_mul");
+        let i64_mul_s = symbol("i64_mul");
         let i64_mul_t = self.define_function(i64_mul_s)?;
         self.function_add_method(
             i64_mul_t,
@@ -622,7 +607,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             },
         );
 
-        let print_s = self.interner.intern("print");
+        let print_s = symbol("print");
         let print_t = self.define_function(print_s)?;
         self.function_add_method(
             print_t,
@@ -682,7 +667,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             let sexp = parser.parse()?;
             trace!("sexp: {}", sexp);
 
-            let exp = lower_sexp(&sexp, &mut self.interner)?;
+            let exp = lower_sexp(&sexp)?;
             trace!("exp: {:?}", &exp);
 
             self.eval_exp(exp)?;
@@ -707,17 +692,14 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<AnyPtrMut, Box<dyn Error>> {
         trace!("type lowered to {:?}", alpha_type);
 
-        let name = self.interner.resolve(alpha_type.name).unwrap().to_string();
+        let name = alpha_type.name.as_str();
         let module = self.context.context().create_module(&name);
 
         let supertype_t = self
             .global_env
             .lookup(alpha_type.supertype)
             .ok_or_else(|| {
-                simple_error!(
-                    "unable to find type: {}",
-                    self.interner.resolve(alpha_type.supertype).unwrap()
-                )
+                simple_error!("unable to find type: {}", alpha_type.supertype.as_str())
             })?;
 
         let supertype_ptr = self
@@ -812,7 +794,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
     /// Build LLVM IR type for `type_`.
     fn build_type_specifier(&mut self, type_: &AlphaType) -> Result<Type, Box<dyn Error>> {
-        let name = self.interner.resolve(type_.name).unwrap();
+        let name = type_.name.as_str();
         let t = match &type_.typedef {
             AlphaTypeDef::Abstract => panic!("build_type_specifier is called for Abstract type"),
             AlphaTypeDef::Int(size) => {
@@ -837,7 +819,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                 let v = fields
                     .iter()
                     .map(|(_name, type_)| {
-                        let name = self.interner.resolve(type_.name).unwrap();
+                        let name = type_.name.as_str();
                         if type_.typedef == AlphaTypeDef::Abstract {
                             // Even though typ can be more concrete than Any, we still define the
                             // field as %Any* in LLVM. %Any in LLVM IR means that specific DataType
@@ -881,13 +863,8 @@ impl<'ctx> ExecutionSession<'ctx> {
         };
 
         let module = self.new_module("constructor");
-        let constructor = Compiler::compile_constructor(
-            &mut self.interner,
-            self.context.context(),
-            &module,
-            &self.global_env,
-            def,
-        )?;
+        let constructor =
+            Compiler::compile_constructor(self.context.context(), &module, &self.global_env, def)?;
         let name = constructor.get_name();
         self.load_module(module)?;
 
@@ -929,7 +906,6 @@ impl<'ctx> ExecutionSession<'ctx> {
             let f_name = self.unique_name(*name);
             let module = self.new_module("accessor");
             let accessor = Compiler::compile_accessor(
-                &mut self.interner,
                 self.context.context(),
                 &module,
                 &self.global_env,
@@ -961,7 +937,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn eval_function_definition(&mut self, mut def: exp::Function) -> Result<(), Box<dyn Error>> {
         let fn_name_s = def.prototype.name;
         let method_name = self.unique_name(fn_name_s);
-        let method_name_s = self.interner.intern(&method_name);
+        let method_name_s = symbol(&method_name);
 
         def.prototype.name = method_name_s;
 
@@ -969,13 +945,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         // compile method
         let module = self.new_module(&method_name);
-        let instance = Compiler::compile(
-            &mut self.interner,
-            self.context.context(),
-            &module,
-            &self.global_env,
-            &def,
-        )?;
+        let instance = Compiler::compile(self.context.context(), &module, &self.global_env, &def)?;
         let instance_fn_name = instance.get_name();
         self.load_module(module)?;
         let instance = self.jit.lookup::<GenericFn>(instance_fn_name)?;
@@ -1014,7 +984,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     fn define_function(&mut self, symbol: Symbol) -> Result<AnyPtr, Box<dyn Error>> {
-        let name = self.interner.resolve(symbol).unwrap().to_string();
+        let name = symbol.as_str();
 
         let fn_t = self.define_function_type(&name)?;
         let fn_obj = self.define_function_object(symbol, fn_t)?;
@@ -1023,8 +993,8 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     fn define_function_type(&mut self, fn_name: &str) -> Result<*mut DataType, Box<dyn Error>> {
-        let any_s = self.interner.intern("Any");
-        let fn_t_name = self.interner.intern(&("fn_".to_string() + fn_name + "_t"));
+        let any_s = symbol("Any");
+        let fn_t_name = symbol(&("fn_".to_string() + fn_name + "_t"));
         let fn_t = self.eval_type(&AlphaType {
             name: fn_t_name,
             supertype: any_s,
@@ -1038,7 +1008,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         symbol: Symbol,
         fn_t: *const DataType,
     ) -> Result<AnyPtr, Box<dyn Error>> {
-        let name = self.interner.resolve(symbol).unwrap();
+        let name = symbol.as_str();
 
         // allocate function object
         let f = unsafe {
@@ -1073,22 +1043,16 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn eval_anonymous_expression(&mut self, e: Exp) -> Result<(), Box<dyn Error>> {
         let def = exp::Function {
             prototype: exp::FunctionPrototype {
-                name: self.interner.intern("*anonymous*"),
+                name: symbol("*anonymous*"),
                 params: vec![],
-                result_type: self.interner.intern("Any"),
+                result_type: symbol("Any"),
             },
             body: Some(Box::new(e)),
         };
 
         let module = self.new_module("user");
 
-        let f = Compiler::compile(
-            &mut self.interner,
-            self.context.context(),
-            &module,
-            &self.global_env,
-            &def,
-        )?;
+        let f = Compiler::compile(self.context.context(), &module, &self.global_env, &def)?;
 
         let name = f.get_name();
 
@@ -1138,6 +1102,6 @@ impl<'ctx> ExecutionSession<'ctx> {
 
     fn unique_name(&mut self, symbol: Symbol) -> String {
         let i = self.next_counter();
-        format!("{}.{}_", self.interner.resolve(symbol).unwrap(), i)
+        format!("{}.{}_", symbol.as_str(), i)
     }
 }
