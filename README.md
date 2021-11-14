@@ -2,7 +2,8 @@
 > A newborn programming language for extensible software.
 
 Posts about Alpha:
-- [Alpha #1](https://www.alexeyshmalko.com/alpha-1/)
+- [Alpha #1: a newborn programming language for extensible systems](https://www.alexeyshmalko.com/alpha-1/)
+- [Alpha #2: multi-methods, type hierarchy, and dot desugaring](https://www.alexeyshmalko.com/alpha-2/)
 
 ## Build
 You need LLVM 13 to build Alpha. Once installed, run:
