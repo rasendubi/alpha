@@ -10,7 +10,7 @@ use log::trace;
 use crate::gc;
 use crate::gc::GcBox;
 use crate::gc_global;
-use crate::types::{set_typetag, SYMBOL_T};
+use crate::types::{set_typetag, AnyPtr, SYMBOL_T};
 
 #[ctor::ctor]
 static SYMBOLS_MUTEX: Mutex<()> = Mutex::new(());
@@ -61,6 +61,10 @@ impl Symbol {
     #[allow(dead_code)]
     pub fn as_cstr(&self) -> &CStr {
         self.node.as_cstr()
+    }
+
+    pub fn as_anyptr(&self) -> AnyPtr {
+        self.node as *const SymbolNode as AnyPtr
     }
 }
 
