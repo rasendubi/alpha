@@ -157,13 +157,14 @@ impl AlphaValue for DataType {
 }
 
 #[derive(Debug)]
+#[repr(C)]
 pub struct Method {
     /// Values can be either types (type=DataType) or a Type{T} (type=Type).
     ///
     /// If parameter specifier is a type, any subtype is accepted.
     ///
     /// If parameter specifier is a Type{T}, only type value T is accepted.
-    pub signature: Vec<AnyPtr>,
+    pub signature: *const SVec,
     // compiled instance of the method
     pub instance: GenericFn,
 }

@@ -18,6 +18,7 @@ use crate::exp;
 use crate::exp::{lower_sexp, Exp};
 use crate::gc;
 use crate::parser::Parser;
+use crate::svec::SVec;
 use crate::symbol::{symbol, Symbol};
 use crate::types::*;
 use crate::types::{self, get_typetag, set_typetag, AlphaType, AlphaTypeDef};
@@ -36,54 +37,58 @@ unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
 
 impl Method {
     fn is_applicable(&self, args: &[AnyPtr]) -> bool {
-        if self.signature.len() != args.len() {
-            return false;
-        }
-
-        for (v, spec) in args.iter().zip(self.signature.iter()) {
-            if !param_specifier_is_applicable(*spec, *v) {
+        unsafe {
+            if (*self.signature).len() != args.len() {
                 return false;
             }
-        }
 
-        true
-    }
-
-    fn is_subtype_of(&self, other: &Self) -> bool {
-        // find an element that is strictly more specific
-        let mut subtype_index = None;
-        for (i, (a, b)) in self
-            .signature
-            .iter()
-            .zip(other.signature.iter())
-            .enumerate()
-        {
-            if param_specifier_is_more_specific(*a, *b) {
-                subtype_index = Some(i);
-                break;
-            }
-        }
-
-        let subtype_index = match subtype_index {
-            Some(i) => i,
-            None => return false,
-        };
-
-        // all other elements should have more or equal specificity
-        for (i, (a, b)) in self
-            .signature
-            .iter()
-            .zip(other.signature.iter())
-            .enumerate()
-        {
-            if i != subtype_index {
-                if param_specifier_is_more_specific(*b, *a) {
+            for (v, spec) in args.iter().zip((*self.signature).elements()) {
+                if !param_specifier_is_applicable(*spec, *v) {
                     return false;
                 }
             }
-        }
 
-        true
+            true
+        }
+    }
+
+    fn is_subtype_of(&self, other: &Self) -> bool {
+        unsafe {
+            // find an element that is strictly more specific
+            let mut subtype_index = None;
+            for (i, (a, b)) in (*self.signature)
+                .elements()
+                .iter()
+                .zip((*other.signature).elements())
+                .enumerate()
+            {
+                if param_specifier_is_more_specific(*a, *b) {
+                    subtype_index = Some(i);
+                    break;
+                }
+            }
+
+            let subtype_index = match subtype_index {
+                Some(i) => i,
+                None => return false,
+            };
+
+            // all other elements should have more or equal specificity
+            for (i, (a, b)) in (*self.signature)
+                .elements()
+                .iter()
+                .zip((*other.signature).elements())
+                .enumerate()
+            {
+                if i != subtype_index {
+                    if param_specifier_is_more_specific(*b, *a) {
+                        return false;
+                    }
+                }
+            }
+
+            true
+        }
     }
 }
 
@@ -549,7 +554,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             type_of_t,
             Method {
-                signature: vec![ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr],
+                signature: SVec::new(&[ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr]),
                 instance: alpha_type_of,
             },
         );
@@ -561,7 +566,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             f64_mul_t,
             Method {
-                signature: vec![ANY_T.load() as AnyPtr, f64_t as AnyPtr, f64_t as AnyPtr],
+                signature: SVec::new(&[ANY_T.load() as AnyPtr, f64_t as AnyPtr, f64_t as AnyPtr]),
                 instance: self.jit.lookup::<GenericFn>("f64_mul")?,
             },
         );
@@ -570,7 +575,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             i64_mul_t,
             Method {
-                signature: vec![ANY_T.load() as AnyPtr, i64_t as AnyPtr, i64_t as AnyPtr],
+                signature: SVec::new(&[ANY_T.load() as AnyPtr, i64_t as AnyPtr, i64_t as AnyPtr]),
                 instance: self.jit.lookup::<GenericFn>("i64_mul")?,
             },
         );
@@ -580,35 +585,35 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             print_t,
             Method {
-                signature: vec![ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr],
+                signature: SVec::new(&[ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr]),
                 instance: alpha_print_any,
             },
         );
         self.function_add_method(
             print_t,
             Method {
-                signature: vec![ANY_T.load() as AnyPtr, VOID_T.load() as AnyPtr],
+                signature: SVec::new(&[ANY_T.load() as AnyPtr, VOID_T.load() as AnyPtr]),
                 instance: alpha_print_void,
             },
         );
         self.function_add_method(
             print_t,
             Method {
-                signature: vec![ANY_T.load() as AnyPtr, i64_t as AnyPtr],
+                signature: SVec::new(&[ANY_T.load() as AnyPtr, i64_t as AnyPtr]),
                 instance: alpha_print_i64,
             },
         );
         self.function_add_method(
             print_t,
             Method {
-                signature: vec![ANY_T.load() as AnyPtr, f64_t as AnyPtr],
+                signature: SVec::new(&[ANY_T.load() as AnyPtr, f64_t as AnyPtr]),
                 instance: alpha_print_f64,
             },
         );
         self.function_add_method(
             print_t,
             Method {
-                signature: vec![ANY_T.load() as AnyPtr, DATATYPE_T.load() as AnyPtr],
+                signature: SVec::new(&[ANY_T.load() as AnyPtr, DATATYPE_T.load() as AnyPtr]),
                 instance: alpha_print_datatype,
             },
         );
@@ -833,15 +838,17 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             type_ptr,
             Method {
-                signature: std::iter::once(types::Type::new(type_ptr as *const DataType) as AnyPtr)
-                    .chain(fields.iter().map(|(_name, type_)| {
-                        let llvm_name = match self.global_env.lookup(type_.name) {
-                            Some(EnvValue::Global(s)) => s,
-                            _ => panic!("unable to lookup: {:?}", type_.name),
-                        };
-                        unsafe { *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap() }
-                    }))
-                    .collect(),
+                signature: SVec::new(
+                    &std::iter::once(types::Type::new(type_ptr as *const DataType) as AnyPtr)
+                        .chain(fields.iter().map(|(_name, type_)| {
+                            let llvm_name = match self.global_env.lookup(type_.name) {
+                                Some(EnvValue::Global(s)) => s,
+                                _ => panic!("unable to lookup: {:?}", type_.name),
+                            };
+                            unsafe { *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap() }
+                        }))
+                        .collect::<Vec<_>>(),
+                ),
                 instance: constructor_code,
             },
         );
@@ -854,12 +861,6 @@ impl<'ctx> ExecutionSession<'ctx> {
             AlphaTypeDef::Struct { fields } => fields,
             _ => return Ok(()),
         };
-
-        // let type_llvm_name = match self.global_env.lookup(def.name) {
-        //     Some(EnvValue::Global(s)) => s,
-        //     _ => bail!("unable to find type: {:?}", def.name),
-        // };
-        // let type_obj = unsafe { *self.jit.lookup::<*const AnyPtr>(type_llvm_name)? };
 
         for (i, (name, _typ)) in fields.iter().enumerate() {
             let f_name = self.unique_name(*name);
@@ -881,10 +882,10 @@ impl<'ctx> ExecutionSession<'ctx> {
             self.function_add_method(
                 fn_obj,
                 Method {
-                    signature: vec![
+                    signature: SVec::new(&[
                         types::Type::new(fn_obj as *const DataType) as AnyPtr,
                         type_ptr,
-                    ],
+                    ]),
                     instance: instance,
                 },
             );
@@ -912,15 +913,17 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             fn_obj,
             Method {
-                signature: std::iter::once(types::Type::new(fn_obj as *const DataType) as AnyPtr)
-                    .chain(def.prototype.params.iter().map(|p| {
-                        let llvm_name = match self.global_env.lookup(p.typ) {
-                            Some(EnvValue::Global(s)) => s,
-                            _ => panic!("unable to lookup: {:?}", p.typ),
-                        };
-                        unsafe { *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap() }
-                    }))
-                    .collect(),
+                signature: SVec::new(
+                    &std::iter::once(types::Type::new(fn_obj as *const DataType) as AnyPtr)
+                        .chain(def.prototype.params.iter().map(|p| {
+                            let llvm_name = match self.global_env.lookup(p.typ) {
+                                Some(EnvValue::Global(s)) => s,
+                                _ => panic!("unable to lookup: {:?}", p.typ),
+                            };
+                            unsafe { *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap() }
+                        }))
+                        .collect::<Vec<_>>(),
+                ),
                 instance,
             },
         );

@@ -33,6 +33,10 @@ impl SVec {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
     pub fn elements(&self) -> &[AnyPtr] {
         let len = self.len;
         let this = self as *const SVec as *const AnyPtr;
