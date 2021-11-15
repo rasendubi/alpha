@@ -181,7 +181,7 @@ unsafe extern "C" fn alpha_print_any(_n_args: i64, args: *const AnyPtr) -> AnyPt
     let mut stdout = STDOUT.lock().unwrap();
     let x = *args.add(1) as AnyPtr;
     let type_ = type_of(x);
-    writeln!(stdout, "<{}@{:p}>", (*type_).name, x).unwrap();
+    write!(stdout, "<{}@{:p}>", (*type_).name, x).unwrap();
     VOID.load() as AnyPtr
 }
 
@@ -193,28 +193,28 @@ unsafe extern "C" fn alpha_print_void(_n_args: i64, _args: *const AnyPtr) -> Any
 unsafe extern "C" fn alpha_print_i64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = *(*args.add(1) as *const i64);
-    writeln!(stdout, "{}", x).unwrap();
+    write!(stdout, "{}", x).unwrap();
     VOID.load() as AnyPtr
 }
 
 unsafe extern "C" fn alpha_print_f64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = *(*args.add(1) as *const f64);
-    writeln!(stdout, "{}", x).unwrap();
+    write!(stdout, "{}", x).unwrap();
     VOID.load() as AnyPtr
 }
 
 unsafe extern "C" fn alpha_print_string(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = *args.add(1) as *const AlphaString;
-    writeln!(stdout, "{}", *x).unwrap();
+    write!(stdout, "{}", *x).unwrap();
     VOID.load() as AnyPtr
 }
 
 unsafe extern "C" fn alpha_print_datatype(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = &*(*args.add(1) as *const DataType);
-    writeln!(stdout, "{:#?}", x).unwrap();
+    write!(stdout, "{:#?}", x).unwrap();
     VOID.load() as AnyPtr
 }
 
@@ -651,6 +651,8 @@ impl<'ctx> ExecutionSession<'ctx> {
             r#"
               fn *(x: f64, y: f64) = f64_mul(x, y)
               fn *(x: i64, y: i64) = i64_mul(x, y)
+
+              fn println(x) = { print(x); print("\n") }
             "#,
         )?;
 
@@ -1037,7 +1039,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                 result_type: symbol("Any"),
             },
             body: Some(Box::new(Exp::Call(exp::Call {
-                fun: Box::new(Exp::Symbol(symbol("print"))),
+                fun: Box::new(Exp::Symbol(symbol("println"))),
                 args: vec![e],
             }))),
         };
