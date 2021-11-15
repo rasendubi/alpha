@@ -155,25 +155,38 @@ unsafe extern "C" fn alpha_type_of(_n_args: i64, args: *const AnyPtr) -> AnyPtr 
     type_of(x) as AnyPtr
 }
 
+unsafe extern "C" fn alpha_print_any(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let mut stdout = STDOUT.lock().unwrap();
+    let x = *args.add(1) as AnyPtr;
+    let type_ = type_of(x);
+    writeln!(stdout, "<{}@{:p}>", (*type_).name, x).unwrap();
+    VOID.load() as AnyPtr
+}
+
+unsafe extern "C" fn alpha_print_void(_n_args: i64, _args: *const AnyPtr) -> AnyPtr {
+    // print nothing
+    VOID.load() as AnyPtr
+}
+
 unsafe extern "C" fn alpha_print_i64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = *(*args.add(1) as *const i64);
     writeln!(stdout, "{}", x).unwrap();
-    std::ptr::null()
+    VOID.load() as AnyPtr
 }
 
 unsafe extern "C" fn alpha_print_f64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = *(*args.add(1) as *const f64);
     writeln!(stdout, "{}", x).unwrap();
-    std::ptr::null()
+    VOID.load() as AnyPtr
 }
 
 unsafe extern "C" fn alpha_print_datatype(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = &*(*args.add(1) as *const DataType);
     writeln!(stdout, "{:#?}", x).unwrap();
-    std::ptr::null()
+    VOID.load() as AnyPtr
 }
 
 unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
@@ -546,6 +559,26 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         let print_s = symbol("print");
         let print_t = self.define_function(print_s)?;
+        self.function_add_method(
+            print_t,
+            Method {
+                signature: vec![
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
+                ],
+                instance: alpha_print_any,
+            },
+        );
+        self.function_add_method(
+            print_t,
+            Method {
+                signature: vec![
+                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
+                    ParamSpecifier::SubtypeOf(VOID_T.load() as AnyPtr),
+                ],
+                instance: alpha_print_void,
+            },
+        );
         self.function_add_method(
             print_t,
             Method {
@@ -972,7 +1005,10 @@ impl<'ctx> ExecutionSession<'ctx> {
                 params: vec![],
                 result_type: symbol("Any"),
             },
-            body: Some(Box::new(e)),
+            body: Some(Box::new(Exp::Call(exp::Call {
+                fun: Box::new(Exp::Symbol(symbol("print"))),
+                args: vec![e],
+            }))),
         };
 
         let module = self.new_module("user");
@@ -988,10 +1024,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let tracker = self.load_module_with_tracker(module)?;
         let fun = self.jit.lookup::<GenericFn>(&name)?;
         unsafe {
-            let result = fun(0, std::ptr::null());
-            if !result.is_null() {
-                dump_value("result", result);
-            }
+            fun(0, std::ptr::null());
         }
 
         // This was just an anonymous function. We can unload the module as it is no longer

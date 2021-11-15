@@ -169,10 +169,33 @@ pub struct Method {
     pub instance: GenericFn,
 }
 
+/// `Void` is the unit type in the Alpha type hierarchy. It has only one value — `void`.
+pub struct Void {}
+impl AlphaValue for Void {
+    fn typetag() -> *const DataType {
+        VOID_T.load()
+    }
+    fn datatype() -> DataType {
+        DataType {
+            name: symbol("Void"),
+            supertype: ANY_T.load(),
+            is_abstract: false,
+            methods: Vec::new(),
+            size: 0,
+            n_ptrs: 0,
+        }
+    }
+    fn as_anyptr(&self) -> AnyPtr {
+        self as *const Self as AnyPtr
+    }
+}
+
 gc_global!(pub ANY_T: DataType);
 gc_global!(pub DATATYPE_T: DataType);
 gc_global!(pub SYMBOL_T: DataType);
 gc_global!(pub SVEC_T: DataType);
+gc_global!(pub VOID_T: DataType);
+gc_global!(pub VOID: Void);
 
 #[inline]
 unsafe fn initialize_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
@@ -182,7 +205,7 @@ unsafe fn initialize_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
 pub fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| unsafe {
-        let globals = [&ANY_T, &DATATYPE_T, &SYMBOL_T, &SVEC_T];
+        let globals = [&ANY_T, &DATATYPE_T, &SYMBOL_T, &SVEC_T, &VOID_T];
         // SYMBOL_T must be allocated first because `symbol()` functions requires it to be set. The
         // DataType itself can be initialized later though.
         //
@@ -211,6 +234,13 @@ pub fn init() {
         initialize_global_type::<DataType>(&DATATYPE_T);
         initialize_global_type::<Symbol>(&SYMBOL_T);
         initialize_global_type::<SVec>(&SVEC_T);
+        initialize_global_type::<Void>(&VOID_T);
+
+        {
+            let void = gc::allocate(0) as *mut Void;
+            set_typetag(void, VOID_T.load());
+            VOID.store(void);
+        }
     });
 }
 
