@@ -211,10 +211,11 @@ unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let f = args_slice[0];
 
     let typetag = get_typetag(f);
-    let methods = &(*typetag).methods;
+    let methods = &(*(*typetag).methods);
 
     let mut selected_method: Option<&Method> = None;
-    for method in methods {
+    for method in methods.elements() {
+        let method = &*(*method as *const Method);
         if !method.is_applicable(args_slice) {
             continue;
         }
@@ -553,10 +554,10 @@ impl<'ctx> ExecutionSession<'ctx> {
         let type_of_t = self.define_function(type_of_s)?;
         self.function_add_method(
             type_of_t,
-            Method {
-                signature: SVec::new(&[ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr]),
-                instance: alpha_type_of,
-            },
+            Method::new(
+                SVec::new(&[ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr]),
+                alpha_type_of,
+            ),
         );
 
         // stdlib.ll defines primitive operations
@@ -565,57 +566,57 @@ impl<'ctx> ExecutionSession<'ctx> {
         let f64_mul_t = self.define_function(f64_mul_s)?;
         self.function_add_method(
             f64_mul_t,
-            Method {
-                signature: SVec::new(&[ANY_T.load() as AnyPtr, f64_t as AnyPtr, f64_t as AnyPtr]),
-                instance: self.jit.lookup::<GenericFn>("f64_mul")?,
-            },
+            Method::new(
+                SVec::new(&[ANY_T.load() as AnyPtr, f64_t as AnyPtr, f64_t as AnyPtr]),
+                self.jit.lookup::<GenericFn>("f64_mul")?,
+            ),
         );
         let i64_mul_s = symbol("i64_mul");
         let i64_mul_t = self.define_function(i64_mul_s)?;
         self.function_add_method(
             i64_mul_t,
-            Method {
-                signature: SVec::new(&[ANY_T.load() as AnyPtr, i64_t as AnyPtr, i64_t as AnyPtr]),
-                instance: self.jit.lookup::<GenericFn>("i64_mul")?,
-            },
+            Method::new(
+                SVec::new(&[ANY_T.load() as AnyPtr, i64_t as AnyPtr, i64_t as AnyPtr]),
+                self.jit.lookup::<GenericFn>("i64_mul")?,
+            ),
         );
 
         let print_s = symbol("print");
         let print_t = self.define_function(print_s)?;
         self.function_add_method(
             print_t,
-            Method {
-                signature: SVec::new(&[ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr]),
-                instance: alpha_print_any,
-            },
+            Method::new(
+                SVec::new(&[ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr]),
+                alpha_print_any,
+            ),
         );
         self.function_add_method(
             print_t,
-            Method {
-                signature: SVec::new(&[ANY_T.load() as AnyPtr, VOID_T.load() as AnyPtr]),
-                instance: alpha_print_void,
-            },
+            Method::new(
+                SVec::new(&[ANY_T.load() as AnyPtr, VOID_T.load() as AnyPtr]),
+                alpha_print_void,
+            ),
         );
         self.function_add_method(
             print_t,
-            Method {
-                signature: SVec::new(&[ANY_T.load() as AnyPtr, i64_t as AnyPtr]),
-                instance: alpha_print_i64,
-            },
+            Method::new(
+                SVec::new(&[ANY_T.load() as AnyPtr, i64_t as AnyPtr]),
+                alpha_print_i64,
+            ),
         );
         self.function_add_method(
             print_t,
-            Method {
-                signature: SVec::new(&[ANY_T.load() as AnyPtr, f64_t as AnyPtr]),
-                instance: alpha_print_f64,
-            },
+            Method::new(
+                SVec::new(&[ANY_T.load() as AnyPtr, f64_t as AnyPtr]),
+                alpha_print_f64,
+            ),
         );
         self.function_add_method(
             print_t,
-            Method {
-                signature: SVec::new(&[ANY_T.load() as AnyPtr, DATATYPE_T.load() as AnyPtr]),
-                instance: alpha_print_datatype,
-            },
+            Method::new(
+                SVec::new(&[ANY_T.load() as AnyPtr, DATATYPE_T.load() as AnyPtr]),
+                alpha_print_datatype,
+            ),
         );
 
         self.eval(
@@ -686,7 +687,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                     name: name,
                     supertype: *supertype_ptr,
                     is_abstract: true,
-                    methods: Vec::new(),
+                    methods: SVEC_EMPTY.load(),
                     n_ptrs: 0,
                     size: 0,
                 };
@@ -713,7 +714,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                     is_abstract: false,
                     size: type_size as u64,
                     n_ptrs: n_ptrs as u64,
-                    methods: Vec::new(),
+                    methods: SVEC_EMPTY.load(),
                 };
                 type_ptr
             };
@@ -837,8 +838,8 @@ impl<'ctx> ExecutionSession<'ctx> {
         let constructor_code = self.jit.lookup::<GenericFn>(&name)?;
         self.function_add_method(
             type_ptr,
-            Method {
-                signature: SVec::new(
+            Method::new(
+                SVec::new(
                     &std::iter::once(types::Type::new(type_ptr as *const DataType) as AnyPtr)
                         .chain(fields.iter().map(|(_name, type_)| {
                             let llvm_name = match self.global_env.lookup(type_.name) {
@@ -849,8 +850,8 @@ impl<'ctx> ExecutionSession<'ctx> {
                         }))
                         .collect::<Vec<_>>(),
                 ),
-                instance: constructor_code,
-            },
+                constructor_code,
+            ),
         );
 
         Ok(())
@@ -881,13 +882,13 @@ impl<'ctx> ExecutionSession<'ctx> {
             let fn_obj = self.ensure_function(*name)?;
             self.function_add_method(
                 fn_obj,
-                Method {
-                    signature: SVec::new(&[
+                Method::new(
+                    SVec::new(&[
                         types::Type::new(fn_obj as *const DataType) as AnyPtr,
                         type_ptr,
                     ]),
-                    instance: instance,
-                },
+                    instance,
+                ),
             );
         }
 
@@ -912,8 +913,8 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         self.function_add_method(
             fn_obj,
-            Method {
-                signature: SVec::new(
+            Method::new(
+                SVec::new(
                     &std::iter::once(types::Type::new(fn_obj as *const DataType) as AnyPtr)
                         .chain(def.prototype.params.iter().map(|p| {
                             let llvm_name = match self.global_env.lookup(p.typ) {
@@ -925,7 +926,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                         .collect::<Vec<_>>(),
                 ),
                 instance,
-            },
+            ),
         );
 
         Ok(())
@@ -993,10 +994,10 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(f as AnyPtr)
     }
 
-    fn function_add_method(&mut self, fn_obj: AnyPtr, method: Method) {
+    fn function_add_method(&mut self, fn_obj: AnyPtr, method: *const Method) {
         unsafe {
             let fn_t = type_of(fn_obj) as *mut DataType;
-            (*fn_t).methods.push(method);
+            (*fn_t).methods = SVec::push((*fn_t).methods, method as AnyPtr);
         }
     }
 

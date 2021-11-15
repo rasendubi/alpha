@@ -1,6 +1,3 @@
-use crate::types::AlphaValue;
-use crate::types::DataType;
-use crate::types::ANY_T;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::CStr;
@@ -13,7 +10,7 @@ use log::trace;
 use crate::gc;
 use crate::gc::GcBox;
 use crate::gc_global;
-use crate::types::{set_typetag, AnyPtr, SYMBOL_T};
+use crate::types::{set_typetag, AlphaValue, AnyPtr, DataType, ANY_T, SVEC_EMPTY, SYMBOL_T};
 
 #[ctor::ctor]
 static SYMBOLS_MUTEX: Mutex<()> = Mutex::new(());
@@ -83,7 +80,7 @@ impl AlphaValue for Symbol {
             is_abstract: false,
             size: 0, // dynamically-sized
             n_ptrs: 0,
-            methods: Vec::new(),
+            methods: SVEC_EMPTY.load(),
         }
     }
 

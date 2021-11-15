@@ -132,7 +132,8 @@ pub struct DataType {
     pub is_abstract: bool,
     pub size: u64,
     pub n_ptrs: u64,
-    pub methods: Vec<Method>,
+    /// SVec<Method>
+    pub methods: *const SVec,
 }
 
 impl AlphaValue for DataType {
@@ -147,12 +148,8 @@ impl AlphaValue for DataType {
             is_abstract: false,
             size: size_of::<DataType>() as u64,
             n_ptrs: 0, // TODO: symbol is ptr?
-            methods: Vec::new(),
+            methods: SVEC_EMPTY.load(),
         }
-    }
-
-    fn as_anyptr(&self) -> *const u64 {
-        self as *const DataType as AnyPtr
     }
 }
 
@@ -167,6 +164,33 @@ pub struct Method {
     pub signature: *const SVec,
     // compiled instance of the method
     pub instance: GenericFn,
+}
+impl Method {
+    pub fn new(signature: *const SVec, instance: GenericFn) -> *const Self {
+        unsafe {
+            let this = gc::allocate(std::mem::size_of::<Method>()) as *mut Self;
+            *this = Method {
+                signature,
+                instance,
+            };
+            this
+        }
+    }
+}
+impl AlphaValue for Method {
+    fn typetag() -> *const DataType {
+        METHOD_T.load()
+    }
+    fn datatype() -> DataType {
+        DataType {
+            name: symbol("Method"),
+            supertype: ANY_T.load(),
+            is_abstract: false,
+            methods: SVEC_EMPTY.load(),
+            size: std::mem::size_of::<Self>() as u64,
+            n_ptrs: 1,
+        }
+    }
 }
 
 /// Type{T} is a type whose only value is a type object T.
@@ -196,17 +220,16 @@ impl AlphaValue for Type {
             name: symbol("Type"),
             supertype: ANY_T.load(),
             is_abstract: false,
-            methods: Vec::new(),
+            methods: SVEC_EMPTY.load(),
             size: std::mem::size_of::<Type>() as u64,
             n_ptrs: 1,
         }
     }
-    fn as_anyptr(&self) -> AnyPtr {
-        self as *const Self as AnyPtr
-    }
 }
 
 /// `Void` is the unit type in the Alpha type hierarchy. It has only one value — `void`.
+#[derive(Debug)]
+#[repr(C)]
 pub struct Void {}
 impl AlphaValue for Void {
     fn typetag() -> *const DataType {
@@ -217,13 +240,10 @@ impl AlphaValue for Void {
             name: symbol("Void"),
             supertype: ANY_T.load(),
             is_abstract: false,
-            methods: Vec::new(),
+            methods: SVEC_EMPTY.load(),
             size: 0,
             n_ptrs: 0,
         }
-    }
-    fn as_anyptr(&self) -> AnyPtr {
-        self as *const Self as AnyPtr
     }
 }
 
@@ -232,8 +252,10 @@ gc_global!(pub TYPE_T: DataType);
 gc_global!(pub DATATYPE_T: DataType);
 gc_global!(pub SYMBOL_T: DataType);
 gc_global!(pub SVEC_T: DataType);
+gc_global!(pub SVEC_EMPTY: SVec);
 gc_global!(pub VOID_T: DataType);
 gc_global!(pub VOID: Void);
+gc_global!(pub METHOD_T: DataType);
 
 #[inline]
 unsafe fn initialize_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
@@ -243,7 +265,15 @@ unsafe fn initialize_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
 pub fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| unsafe {
-        let globals = [&ANY_T, &TYPE_T, &DATATYPE_T, &SYMBOL_T, &SVEC_T, &VOID_T];
+        let globals = [
+            &ANY_T,
+            &TYPE_T,
+            &DATATYPE_T,
+            &SYMBOL_T,
+            &SVEC_T,
+            &VOID_T,
+            &METHOD_T,
+        ];
         // SYMBOL_T must be allocated first because `symbol()` functions requires it to be set. The
         // DataType itself can be initialized later though.
         //
@@ -257,13 +287,22 @@ pub fn init() {
             set_typetag(global.load(), datatype_t);
         }
 
+        // SVEC_EMPTY must be initialized before calling initialize_global_type() as many
+        // implementations of AlphaValue::datatype() use SVEC_EMPTY to initialize methods field.
+        SVEC_EMPTY.store(SVec::new(&[]) as *mut _);
+        {
+            let void = gc::allocate(0) as *mut Void;
+            set_typetag(void, VOID_T.load());
+            VOID.store(void);
+        }
+
         {
             let any_t = ANY_T.load();
             *any_t = DataType {
                 name: symbol("Any"),
                 supertype: any_t,
                 is_abstract: true,
-                methods: Vec::new(),
+                methods: SVEC_EMPTY.load(),
                 size: 0,
                 n_ptrs: 0,
             };
@@ -273,12 +312,7 @@ pub fn init() {
         initialize_global_type::<Symbol>(&SYMBOL_T);
         initialize_global_type::<SVec>(&SVEC_T);
         initialize_global_type::<Void>(&VOID_T);
-
-        {
-            let void = gc::allocate(0) as *mut Void;
-            set_typetag(void, VOID_T.load());
-            VOID.store(void);
-        }
+        initialize_global_type::<Method>(&METHOD_T);
     });
 }
 
@@ -295,5 +329,7 @@ unsafe fn typetag_ptr<T>(ptr: *const T) -> *mut *const DataType {
 pub trait AlphaValue {
     fn typetag() -> *const DataType;
     fn datatype() -> DataType;
-    fn as_anyptr(&self) -> AnyPtr;
+    fn as_anyptr(&self) -> AnyPtr {
+        self as *const Self as AnyPtr
+    }
 }
