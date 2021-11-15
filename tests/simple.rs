@@ -41,3 +41,13 @@ output_test!(
     "#,
     "2.13\n3\n"
 );
+
+output_test!(
+    test_custom_print,
+    r#"
+      type X = { blah }
+      fn print(x: X) = print(x.blah)
+      print(X(42))
+    "#,
+    "42\n"
+);
