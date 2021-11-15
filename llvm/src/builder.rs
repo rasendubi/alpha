@@ -97,12 +97,12 @@ impl Builder {
 
     pub fn build_gep(&self, ptr: Value, indices: &[Value], name: &str) -> Value {
         let name = CString::new(name).unwrap();
-        let indices = indices.iter().map(|x| x.0).collect::<Vec<_>>();
+        let mut indices = indices.iter().map(|x| x.0).collect::<Vec<_>>();
         unsafe {
             Value::new(core::LLVMBuildGEP(
                 self.0,
                 ptr.0,
-                indices.as_ptr() as *mut _,
+                indices.as_mut_ptr(),
                 indices.len() as u32,
                 name.as_ptr(),
             ))
@@ -116,6 +116,30 @@ impl Builder {
                 self.0,
                 ptr.0,
                 index,
+                name.as_ptr(),
+            ))
+        }
+    }
+
+    pub fn build_global_string(&self, s: &str, name: &str) -> Value {
+        let s = CString::new(s).unwrap();
+        let name = CString::new(name).unwrap();
+        unsafe {
+            Value::new(core::LLVMBuildGlobalString(
+                self.0,
+                s.as_ptr(),
+                name.as_ptr(),
+            ))
+        }
+    }
+
+    pub fn build_global_string_ptr(&self, s: &str, name: &str) -> Value {
+        let s = CString::new(s).unwrap();
+        let name = CString::new(name).unwrap();
+        unsafe {
+            Value::new(core::LLVMBuildGlobalStringPtr(
+                self.0,
+                s.as_ptr(),
                 name.as_ptr(),
             ))
         }

@@ -51,3 +51,5 @@ output_test!(
     "#,
     "42\n"
 );
+
+output_test!(test_string_print, "print(\"hello\")", "hello\n");

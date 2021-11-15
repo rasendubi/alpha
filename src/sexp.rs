@@ -5,6 +5,7 @@ pub enum SExp<'a> {
     Symbol(&'a str),
     Integer(&'a str),
     Float(&'a str),
+    String(String),
 }
 
 impl<'a> SExp<'a> {
@@ -22,7 +23,6 @@ impl<'a> SExp<'a> {
             None
         }
     }
-
 }
 
 impl<'a> std::fmt::Display for SExp<'a> {
@@ -48,6 +48,9 @@ impl<'a> std::fmt::Display for SExp<'a> {
             }
             SExp::Float(n) => {
                 write!(f, "{}", n)
+            }
+            SExp::String(s) => {
+                write!(f, "{:?}", s)
             }
         }
     }

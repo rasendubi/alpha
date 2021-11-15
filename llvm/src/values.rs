@@ -1,5 +1,6 @@
 use llvm_sys::core;
 use llvm_sys::prelude::*;
+pub use llvm_sys::LLVMLinkage;
 
 use crate::string::LLVMString;
 use crate::types::Type;
@@ -68,6 +69,10 @@ impl Value {
         unsafe {
             core::LLVMSetInitializer(self.0, init.0);
         }
+    }
+
+    pub fn global_get_linkage(&self) -> LLVMLinkage {
+        unsafe { core::LLVMGetLinkage(self.0) }
     }
 
     pub fn dump_to_stderr(&self) {

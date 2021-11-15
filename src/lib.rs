@@ -7,6 +7,7 @@ mod init;
 mod lexer;
 mod parser;
 mod sexp;
+mod string;
 mod svec;
 mod symbol;
 mod types;

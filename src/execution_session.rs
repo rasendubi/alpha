@@ -10,7 +10,7 @@ use llvm::module::Module;
 use llvm::orc::lljit::{LLJITBuilder, ResourceTracker, LLJIT};
 use llvm::orc::thread_safe::ThreadSafeContext;
 use llvm::types::{AddressSpace, Type};
-use llvm::values::Value;
+use llvm::values::{LLVMLinkage, Value};
 
 use crate::compiler::Compiler;
 use crate::env::Env;
@@ -18,6 +18,7 @@ use crate::exp;
 use crate::exp::{lower_sexp, Exp};
 use crate::gc;
 use crate::parser::Parser;
+use crate::string::AlphaString;
 use crate::svec::SVec;
 use crate::symbol::{symbol, Symbol};
 use crate::types::*;
@@ -33,6 +34,12 @@ pub fn set_stdout(out: Box<dyn Write + Sync + Send>) {
 
 unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
     gc::allocate(size as usize)
+}
+
+unsafe extern "C" fn mk_str(p: *const u8, len: u64) -> AnyPtr {
+    let bytes = std::slice::from_raw_parts(p, len as usize);
+    let s = std::str::from_utf8(&bytes).unwrap();
+    AlphaString::new(s) as AnyPtr
 }
 
 impl Method {
@@ -194,6 +201,13 @@ unsafe extern "C" fn alpha_print_f64(_n_args: i64, args: *const AnyPtr) -> AnyPt
     let mut stdout = STDOUT.lock().unwrap();
     let x = *(*args.add(1) as *const f64);
     writeln!(stdout, "{}", x).unwrap();
+    VOID.load() as AnyPtr
+}
+
+unsafe extern "C" fn alpha_print_string(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let mut stdout = STDOUT.lock().unwrap();
+    let x = *args.add(1) as *const AlphaString;
+    writeln!(stdout, "{}", *x).unwrap();
     VOID.load() as AnyPtr
 }
 
@@ -487,6 +501,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             .insert(symbol("DataType"), datatype_typedef.clone());
 
         let any_ptr_t = any_t.pointer_type(AddressSpace::Generic);
+        let i8_t = self.context.context().int_type(8);
         let i64_t = self.context.context().int_type(64);
         let fn_t = any_ptr_t.function_type(
             &[
@@ -502,6 +517,12 @@ impl<'ctx> ExecutionSession<'ctx> {
         );
         self.jit
             .define_symbol("gc_allocate", gc_allocate as usize)?;
+
+        self.globals.add_function(
+            "mk_str",
+            any_ptr_t.function_type(&[i8_t.pointer_type(AddressSpace::Generic), i64_t], false),
+        );
+        self.jit.define_symbol("mk_str", mk_str as usize)?;
 
         self.globals.add_function("dispatch", fn_t);
         self.jit.define_symbol("dispatch", dispatch as usize)?;
@@ -609,6 +630,13 @@ impl<'ctx> ExecutionSession<'ctx> {
             Method::new(
                 SVec::new(&[ANY_T.load() as AnyPtr, f64_t as AnyPtr]),
                 alpha_print_f64,
+            ),
+        );
+        self.function_add_method(
+            print_t,
+            Method::new(
+                SVec::new(&[ANY_T.load() as AnyPtr, STRING_T.load() as AnyPtr]),
+                alpha_print_string,
             ),
         );
         self.function_add_method(
@@ -1040,8 +1068,11 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn save_global_declarations(&mut self, module: &Module) {
         for v in module.globals() {
             if self.globals.get_global(v.get_name()).is_none() {
-                self.globals
-                    .add_global(v.get_name(), v.get_type().element_type());
+                let linkage = v.global_get_linkage();
+                if linkage == LLVMLinkage::LLVMExternalLinkage {
+                    self.globals
+                        .add_global(v.get_name(), v.get_type().element_type());
+                }
             }
         }
     }

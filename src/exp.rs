@@ -17,6 +17,7 @@ pub enum Exp {
     Symbol(Symbol),
     Integer(i64),
     Float(f64),
+    String(String),
     Block(Vec<Exp>),
 }
 
@@ -71,6 +72,7 @@ pub fn lower_sexp(sexp: &SExp) -> Result<Exp, Box<dyn Error>> {
     let exp = match sexp {
         SExp::Integer(n) => Exp::Integer(n.parse().expect("cannot parse i64")),
         SExp::Float(n) => Exp::Float(n.parse().expect("cannot parse f64")),
+        SExp::String(s) => Exp::String(s.clone()),
         SExp::Symbol(s) => Exp::Symbol(symbol(s)),
         SExp::List(v) => match v[0].as_symbol().expect("list head is not a symbol") {
             "type" => Exp::Type(lower_type_definition(&v[1])?),

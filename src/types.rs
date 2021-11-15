@@ -7,6 +7,7 @@ use crate::exp::{TypeDefinition, TypeSpecifier};
 use crate::gc;
 use crate::gc::GcBox;
 use crate::gc_global;
+use crate::string::AlphaString;
 use crate::svec::SVec;
 use crate::symbol::{symbol, Symbol};
 
@@ -256,6 +257,7 @@ gc_global!(pub SVEC_EMPTY: SVec);
 gc_global!(pub VOID_T: DataType);
 gc_global!(pub VOID: Void);
 gc_global!(pub METHOD_T: DataType);
+gc_global!(pub STRING_T: DataType);
 
 #[inline]
 unsafe fn initialize_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
@@ -273,6 +275,7 @@ pub fn init() {
             &SVEC_T,
             &VOID_T,
             &METHOD_T,
+            &STRING_T,
         ];
         // SYMBOL_T must be allocated first because `symbol()` functions requires it to be set. The
         // DataType itself can be initialized later though.
@@ -313,6 +316,7 @@ pub fn init() {
         initialize_global_type::<SVec>(&SVEC_T);
         initialize_global_type::<Void>(&VOID_T);
         initialize_global_type::<Method>(&METHOD_T);
+        initialize_global_type::<AlphaString>(&STRING_T);
     });
 }
 

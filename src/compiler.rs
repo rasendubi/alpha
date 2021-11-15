@@ -38,6 +38,8 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     /// declare %Any* @gc_allocate(i64 %size)
     ///
     /// declare %Any* @dispatch(%Any* %fun, i64 %n_args, %Any** %args)
+    ///
+    /// declare %Any* @mk_str(i8* %ptr, i64 len)
     /// ```
     ///
     /// The following symbols should be resolve-able via env:
@@ -431,6 +433,17 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 self.build_set_typetag(ptr, i64t);
 
                 ptr.into()
+            }
+            Exp::String(s) => {
+                let len = s.len();
+                let s = self.builder.build_global_string_ptr(s, "str_literal");
+                let mk_str = self.module.get_function("mk_str").unwrap();
+                let r = self.builder.build_call(
+                    mk_str,
+                    &[s, self.context.int_type(64).const_int(len as u64, false)],
+                    "string",
+                );
+                r
             }
             Exp::Call(call) => {
                 let f = self.compile_exp(env, &call.fun)?;

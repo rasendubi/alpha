@@ -82,6 +82,7 @@ impl<'a> Parser<'a> {
         let parse_table = parse_rules! {
             { Integer          => prefix: parse_integer                        },
             { Float            => prefix: parse_float                          },
+            { String           => prefix: parse_string                         },
             { Symbol("fn")     => prefix: parse_fn                             },
             { Symbol("type")   => prefix: parse_type                           },
             { Symbol("{")      => prefix: parse_block                          },
@@ -205,6 +206,13 @@ fn parse_float<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
     }
 }
 
+fn parse_string<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+    match p.lexer.next().unwrap() {
+        Token::String(s) => Ok(SExp::String(unescape_string(s))),
+        _ => unreachable!(),
+    }
+}
+
 fn parse_group<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
     p.lexer.next(); // (
     let expr = p.parse_expr()?;
@@ -320,4 +328,36 @@ fn parse_call<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<dy
     p.lexer.next();
 
     Ok(SExp::List(v))
+}
+
+fn unescape_string(s: &str) -> String {
+    let mut result = String::new();
+
+    let mut chars = s.chars();
+    chars.next(); // "
+    loop {
+        let c = chars.next();
+        match c {
+            None => panic!("unexpected end of input while parsing string"),
+            Some('"') => {
+                if chars.next().is_some() {
+                    panic!("unexpected \" in the middle of the string");
+                }
+                break;
+            }
+            Some('\\') => match chars.next() {
+                None => panic!("unexpected end of input while parsing string (after \\)"),
+                Some('\\') => result.push('\\'),
+                Some('"') => result.push('"'),
+                Some('n') => result.push('\n'),
+                Some(c) => {
+                    result.push('\\');
+                    result.push(c);
+                }
+            },
+            Some(c) => result.push(c),
+        }
+    }
+
+    result
 }
