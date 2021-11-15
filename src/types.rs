@@ -5,7 +5,9 @@ use std::sync::Once;
 use crate::env::Env;
 use crate::exp::{TypeDefinition, TypeSpecifier};
 use crate::gc;
+use crate::gc::GcBox;
 use crate::gc_global;
+use crate::svec::SVec;
 use crate::symbol::{symbol, Symbol};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -125,19 +127,33 @@ pub type GenericFn = unsafe extern "C" fn(i64, *const AnyPtr) -> AnyPtr;
 #[derive(Debug)]
 #[repr(C)]
 pub struct DataType {
-    pub supertype: *const AbstractType,
+    pub name: Symbol,
+    pub supertype: *const DataType,
+    pub is_abstract: bool,
     pub size: u64,
     pub n_ptrs: u64,
     pub methods: Vec<Method>,
-    pub name: Symbol,
 }
 
-// type DataType = { size: i64, n_ptrs: i64, methods: i64 }
-#[derive(Debug)]
-#[repr(C)]
-pub struct AbstractType {
-    pub supertype: *const AbstractType,
-    pub name: Symbol,
+impl AlphaValue for DataType {
+    fn typetag() -> *const DataType {
+        DATATYPE_T.load()
+    }
+
+    fn datatype() -> DataType {
+        DataType {
+            name: symbol("DataType"),
+            supertype: ANY_T.load(),
+            is_abstract: false,
+            size: size_of::<DataType>() as u64,
+            n_ptrs: 0, // TODO: symbol is ptr?
+            methods: Vec::new(),
+        }
+    }
+
+    fn as_anyptr(&self) -> *const u64 {
+        self as *const DataType as AnyPtr
+    }
 }
 
 #[derive(Debug)]
@@ -153,77 +169,48 @@ pub struct Method {
     pub instance: GenericFn,
 }
 
-gc_global!(pub ANY_T: AbstractType);
-gc_global!(pub TYPE_T: AbstractType);
+gc_global!(pub ANY_T: DataType);
 gc_global!(pub DATATYPE_T: DataType);
-gc_global!(pub ABSTRACTTYPE_T: DataType);
 gc_global!(pub SYMBOL_T: DataType);
+gc_global!(pub SVEC_T: DataType);
+
+#[inline]
+unsafe fn initialize_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
+    *global.load() = T::datatype();
+}
 
 pub fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| unsafe {
-        // SYMBOL_T must be allocated first because `symbol()` functions requires it to be set. It
-        // can be initialized later though.
-        SYMBOL_T.store(gc::allocate(size_of::<DataType>()) as *mut DataType);
+        let globals = [&ANY_T, &DATATYPE_T, &SYMBOL_T, &SVEC_T];
+        // SYMBOL_T must be allocated first because `symbol()` functions requires it to be set. The
+        // DataType itself can be initialized later though.
+        //
+        // SVEC_T must be allocated before any SVec creation. The DataType itself can be initialized
+        // later.
+        for global in &globals {
+            global.store(gc::allocate(size_of::<DataType>()) as *mut DataType);
+        }
+        let datatype_t = DATATYPE_T.load();
+        for global in &globals {
+            set_typetag(global.load(), datatype_t);
+        }
 
         {
-            let any_t = gc::allocate(size_of::<AbstractType>()) as *mut AbstractType;
-            ANY_T.store(any_t);
-            *any_t = AbstractType {
-                supertype: any_t,
+            let any_t = ANY_T.load();
+            *any_t = DataType {
                 name: symbol("Any"),
-            };
-        }
-
-        {
-            let type_t = gc::allocate(size_of::<AbstractType>()) as *mut AbstractType;
-            TYPE_T.store(type_t);
-            *type_t = AbstractType {
-                supertype: ANY_T.load(),
-                name: symbol("Type"),
-            };
-        }
-
-        {
-            let datatype_t = gc::allocate(size_of::<DataType>()) as *mut DataType;
-            DATATYPE_T.store(datatype_t);
-            set_typetag(datatype_t, datatype_t);
-            *datatype_t = DataType {
-                supertype: TYPE_T.load(),
-                size: size_of::<DataType>() as u64,
-                n_ptrs: 0,
+                supertype: any_t,
+                is_abstract: true,
                 methods: Vec::new(),
-                name: symbol("DataType"),
+                size: 0,
+                n_ptrs: 0,
             };
         }
 
-        {
-            let abstracttype_t = gc::allocate(size_of::<DataType>()) as *mut DataType;
-            ABSTRACTTYPE_T.store(abstracttype_t);
-            set_typetag(abstracttype_t, DATATYPE_T.load());
-            *abstracttype_t = DataType {
-                supertype: TYPE_T.load(),
-                size: size_of::<AbstractType>() as u64,
-                n_ptrs: 0,
-                methods: Vec::new(),
-                name: symbol("AbstractType"),
-            };
-
-            set_typetag(ANY_T.load(), abstracttype_t);
-            set_typetag(TYPE_T.load(), abstracttype_t);
-        }
-
-        {
-            let symbol_t = SYMBOL_T.load();
-            set_typetag(symbol_t, DATATYPE_T.load());
-            *symbol_t = DataType {
-                supertype: ANY_T.load(),
-                size: 0, // dynamically-sized
-                n_ptrs: 0,
-                methods: Vec::new(),
-                name: symbol("Symbol"),
-            }
-        }
+        initialize_global_type::<DataType>(&DATATYPE_T);
+        initialize_global_type::<Symbol>(&SYMBOL_T);
+        initialize_global_type::<SVec>(&SVEC_T);
     });
 }
 
@@ -235,4 +222,10 @@ pub unsafe fn get_typetag<T>(ptr: *const T) -> *const DataType {
 }
 unsafe fn typetag_ptr<T>(ptr: *const T) -> *mut *const DataType {
     (ptr as *mut *const DataType).sub(1)
+}
+
+pub trait AlphaValue {
+    fn typetag() -> *const DataType;
+    fn datatype() -> DataType;
+    fn as_anyptr(&self) -> AnyPtr;
 }

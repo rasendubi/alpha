@@ -176,13 +176,6 @@ unsafe extern "C" fn alpha_print_datatype(_n_args: i64, args: *const AnyPtr) -> 
     std::ptr::null()
 }
 
-unsafe extern "C" fn alpha_print_abstracttype(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let mut stdout = STDOUT.lock().unwrap();
-    let x = &*(*args.add(1) as *const AbstractType);
-    writeln!(stdout, "{:?}", x).unwrap();
-    std::ptr::null()
-}
-
 unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let args_slice = std::slice::from_raw_parts(args, n_args as usize);
     trace!("dispatch: {:?}", args_slice);
@@ -411,11 +404,6 @@ impl<'ctx> ExecutionSession<'ctx> {
         let any_t = self.context.context().create_named_struct_type("Any"); // opaque
         let datatype_t = self.context.context().create_named_struct_type("DataType"); // to be defined
         let datatype_ptr_t = datatype_t.pointer_type(AddressSpace::Generic);
-        let abstracttype_t = self
-            .context
-            .context()
-            .create_named_struct_type("AbstractType"); // to be defined
-        let abstracttype_ptr_t = abstracttype_t.pointer_type(AddressSpace::Generic);
 
         self.types.insert(
             symbol("Any"),
@@ -425,56 +413,38 @@ impl<'ctx> ExecutionSession<'ctx> {
                 typedef: AlphaTypeDef::Abstract,
             },
         );
-        let type_typedef = AlphaType {
-            name: symbol("Type"),
-            supertype: symbol("Any"),
-            typedef: AlphaTypeDef::Abstract,
-        };
-        self.types.insert(symbol("Type"), type_typedef.clone());
-        let abstracttype_typedef = AlphaType {
-            name: symbol("AbstractType"),
-            supertype: symbol("Type"),
-            typedef: AlphaTypeDef::Struct {
-                fields: vec![(
-                    symbol("supertype"),
-                    // this is supertype: Type, but in reality it should be supertype: AbstractType
-                    type_typedef,
-                )],
-            },
-        };
-        self.types
-            .insert(symbol("AbstractType"), abstracttype_typedef.clone());
         let datatype_typedef = AlphaType {
             name: symbol("DataType"),
-            supertype: symbol("Type"),
+            supertype: symbol("Any"),
             typedef: AlphaTypeDef::Struct {
                 fields: vec![
-                    (symbol("supertype"), abstracttype_typedef.clone()),
-                    (
-                        symbol("size"),
-                        AlphaType {
-                            name: symbol("i64"),
-                            supertype: symbol("Number"),
-                            typedef: AlphaTypeDef::Int(64),
-                        },
-                    ),
-                    (
-                        symbol("n_ptrs"),
-                        AlphaType {
-                            name: symbol("i64"),
-                            supertype: symbol("Number"),
-                            typedef: AlphaTypeDef::Int(64),
-                        },
-                    ),
-                    (
-                        symbol("methods"),
-                        AlphaType {
-                            // actually: pointer to Vec<Method>
-                            name: symbol("i64"),
-                            supertype: symbol("Number"),
-                            typedef: AlphaTypeDef::Int(64),
-                        },
-                    ),
+                    // TODO:
+                    // (symbol("supertype"), abstracttype_typedef.clone()),
+                    // (
+                    //     symbol("size"),
+                    //     AlphaType {
+                    //         name: symbol("i64"),
+                    //         supertype: symbol("Number"),
+                    //         typedef: AlphaTypeDef::Int(64),
+                    //     },
+                    // ),
+                    // (
+                    //     symbol("n_ptrs"),
+                    //     AlphaType {
+                    //         name: symbol("i64"),
+                    //         supertype: symbol("Number"),
+                    //         typedef: AlphaTypeDef::Int(64),
+                    //     },
+                    // ),
+                    // (
+                    //     symbol("methods"),
+                    //     AlphaType {
+                    //         // actually: pointer to Vec<Method>
+                    //         name: symbol("i64"),
+                    //         supertype: symbol("Number"),
+                    //         typedef: AlphaTypeDef::Int(64),
+                    //     },
+                    // ),
                 ],
             },
         };
@@ -507,25 +477,11 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.global_env
             .insert(symbol("DataType"), EnvValue::Global("DataType".to_string()));
 
-        self.globals.add_global("AbstractType", datatype_ptr_t);
-        self.jit
-            .define_symbol("AbstractType", ABSTRACTTYPE_T.as_ref() as *const _ as usize)?;
-        self.global_env.insert(
-            symbol("AbstractType"),
-            EnvValue::Global("AbstractType".to_string()),
-        );
-
-        self.globals.add_global("Any", abstracttype_ptr_t);
+        self.globals.add_global("Any", datatype_ptr_t);
         self.jit
             .define_symbol("Any", ANY_T.as_ref() as *const _ as usize)?;
         self.global_env
             .insert(symbol("Any"), EnvValue::Global("Any".to_string()));
-
-        self.globals.add_global("Type", abstracttype_ptr_t);
-        self.jit
-            .define_symbol("Type", TYPE_T.as_ref() as *const _ as usize)?;
-        self.global_env
-            .insert(symbol("Type"), EnvValue::Global("Type".to_string()));
 
         // Add a copy of the globals module to jit, so globals with initializers are defined.
         self.load_module(self.globals.clone())?;
@@ -541,8 +497,6 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         // DataType type specifier can only be built after i64 and f64 are defined in alpha.
         let t = self.build_type_specifier(&datatype_typedef)?;
-        trace!("defined type: {}", t);
-        let t = self.build_type_specifier(&abstracttype_typedef)?;
         trace!("defined type: {}", t);
 
         let i64_t = unsafe { *self.jit.lookup::<*const *const DataType>("i64")? };
@@ -622,16 +576,6 @@ impl<'ctx> ExecutionSession<'ctx> {
                 instance: alpha_print_datatype,
             },
         );
-        self.function_add_method(
-            print_t,
-            Method {
-                signature: vec![
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                    ParamSpecifier::SubtypeOf(ABSTRACTTYPE_T.load() as AnyPtr),
-                ],
-                instance: alpha_print_abstracttype,
-            },
-        );
 
         self.eval(
             r#"
@@ -690,18 +634,20 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         let supertype_ptr = self
             .jit
-            .lookup::<*const *const AbstractType>(supertype_t.as_global())?;
+            .lookup::<*const *const DataType>(supertype_t.as_global())?;
         // TODO: verify the supertype is abstract
 
         let type_ptr = if alpha_type.typedef == AlphaTypeDef::Abstract {
-            let abstracttype_t = self.jit.lookup::<*const *const DataType>("AbstractType")?;
             let type_ptr = unsafe {
-                let type_ptr =
-                    gc_allocate(std::mem::size_of::<AbstractType>() as u64) as *mut AbstractType;
-                set_typetag(type_ptr, *abstracttype_t);
-                *type_ptr = AbstractType {
-                    supertype: *supertype_ptr,
+                let type_ptr = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
+                set_typetag(type_ptr, DataType::typetag());
+                *type_ptr = DataType {
                     name: name,
+                    supertype: *supertype_ptr,
+                    is_abstract: true,
+                    methods: Vec::new(),
+                    n_ptrs: 0,
+                    size: 0,
                 };
                 type_ptr
             };
@@ -718,15 +664,15 @@ impl<'ctx> ExecutionSession<'ctx> {
                 .expect("abstract types are not supported yet");
 
             let type_ptr = unsafe {
-                let datatype_t = *self.jit.lookup::<*const *const DataType>("DataType")?;
                 let type_ptr = gc_allocate(std::mem::size_of::<DataType>() as u64) as *mut DataType;
-                set_typetag(type_ptr, datatype_t);
+                set_typetag(type_ptr, DataType::typetag());
                 *type_ptr = DataType {
+                    name: name,
                     supertype: *supertype_ptr,
+                    is_abstract: false,
                     size: type_size as u64,
                     n_ptrs: n_ptrs as u64,
                     methods: Vec::new(),
-                    name: name,
                 };
                 type_ptr
             };
@@ -737,11 +683,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let ptr_t = self
             .context
             .context()
-            .get_named_struct(if alpha_type.typedef == AlphaTypeDef::Abstract {
-                "AbstractType"
-            } else {
-                "DataType"
-            })
+            .get_named_struct("DataType")
             .unwrap()
             .pointer_type(AddressSpace::Generic);
 

@@ -1,3 +1,6 @@
+use crate::types::AlphaValue;
+use crate::types::DataType;
+use crate::types::ANY_T;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::CStr;
@@ -65,6 +68,27 @@ impl Symbol {
 
     pub fn as_anyptr(&self) -> AnyPtr {
         self.node as *const SymbolNode as AnyPtr
+    }
+}
+
+impl AlphaValue for Symbol {
+    fn typetag() -> *const DataType {
+        SYMBOL_T.load()
+    }
+
+    fn datatype() -> DataType {
+        DataType {
+            name: symbol("Symbol"),
+            supertype: ANY_T.load(),
+            is_abstract: false,
+            size: 0, // dynamically-sized
+            n_ptrs: 0,
+            methods: Vec::new(),
+        }
+    }
+
+    fn as_anyptr(&self) -> *const u64 {
+        (self as &Symbol).as_anyptr()
     }
 }
 

@@ -2,7 +2,8 @@
 use std::mem::size_of;
 
 use crate::gc;
-use crate::types::{set_typetag, AnyPtr, SVEC_T};
+use crate::symbol::symbol;
+use crate::types::{set_typetag, AlphaValue, AnyPtr, DataType, ANY_T, SVEC_T};
 
 #[repr(C)]
 pub struct SVec {
@@ -42,6 +43,27 @@ impl SVec {
         let len = self.len;
         let this = self as *mut SVec as *mut AnyPtr;
         unsafe { std::slice::from_raw_parts_mut(this.add(1), len) }
+    }
+}
+
+impl AlphaValue for SVec {
+    fn typetag() -> *const DataType {
+        SVEC_T.load()
+    }
+
+    fn datatype() -> DataType {
+        DataType {
+            name: symbol("SVec"),
+            supertype: ANY_T.load(),
+            is_abstract: false,
+            size: 0, // dynamically-sized
+            n_ptrs: 0,
+            methods: Vec::new(),
+        }
+    }
+
+    fn as_anyptr(&self) -> AnyPtr {
+        self as *const Self as AnyPtr
     }
 }
 
