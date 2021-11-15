@@ -20,7 +20,7 @@ use crate::gc;
 use crate::parser::Parser;
 use crate::symbol::{symbol, Symbol};
 use crate::types::*;
-use crate::types::{get_typetag, set_typetag, AlphaType, AlphaTypeDef};
+use crate::types::{self, get_typetag, set_typetag, AlphaType, AlphaTypeDef};
 
 #[ctor::ctor]
 static STDOUT: Mutex<Box<dyn Write + Sync + Send>> = Mutex::new(Box::new(std::io::stdout()));
@@ -41,7 +41,7 @@ impl Method {
         }
 
         for (v, spec) in args.iter().zip(self.signature.iter()) {
-            if !spec.is_applicable(*v) {
+            if !param_specifier_is_applicable(*spec, *v) {
                 return false;
             }
         }
@@ -58,7 +58,7 @@ impl Method {
             .zip(other.signature.iter())
             .enumerate()
         {
-            if a.is_more_specific_than(b) {
+            if param_specifier_is_more_specific(*a, *b) {
                 subtype_index = Some(i);
                 break;
             }
@@ -77,7 +77,7 @@ impl Method {
             .enumerate()
         {
             if i != subtype_index {
-                if b.is_more_specific_than(a) {
+                if param_specifier_is_more_specific(*b, *a) {
                     return false;
                 }
             }
@@ -87,29 +87,39 @@ impl Method {
     }
 }
 
-impl ParamSpecifier {
-    fn is_applicable(&self, v: AnyPtr) -> bool {
-        match self {
-            ParamSpecifier::Eq(x) => *x == v,
-            ParamSpecifier::SubtypeOf(t) => unsafe {
-                let cpls = get_cpl(type_of(v));
-                cpls.contains(t)
-            },
+fn param_specifier_is_applicable(ps: AnyPtr, v: AnyPtr) -> bool {
+    unsafe {
+        let ps_kind = type_of(ps);
+        if ps_kind == TYPE_T.load() {
+            let t = ps as *const types::Type;
+            v == (*t).t as AnyPtr
+        } else if ps_kind == DATATYPE_T.load() {
+            let cpls = get_cpl(type_of(v));
+            cpls.contains(&ps)
+        } else {
+            panic!("wrong type for parameter specifier: {:?}", ps_kind);
         }
     }
+}
 
-    /// Returns `true` if self is more specific than `other`.
-    fn is_more_specific_than(&self, other: &Self) -> bool {
-        match (self, other) {
-            (ParamSpecifier::Eq(_), _) => {
-                // might be not true, but good enough for the Method::is_subtype_of().
-                true
-            }
-            (_, ParamSpecifier::Eq(_)) => false,
-            (ParamSpecifier::SubtypeOf(a), ParamSpecifier::SubtypeOf(b)) => unsafe {
-                let a_cpls = get_cpl(*a as *const DataType);
-                a_cpls.contains(b)
-            },
+/// Returns `true` if `a` is more specific than `b`.
+fn param_specifier_is_more_specific(a: AnyPtr, b: AnyPtr) -> bool {
+    unsafe {
+        let a_kind = type_of(a);
+        let b_kind = type_of(b);
+        if a_kind == TYPE_T.load() {
+            // might be not true, but good enough for the Method::is_subtype_of().
+            true
+        } else if b_kind == TYPE_T.load() {
+            false
+        } else if a_kind == DATATYPE_T.load() && b_kind == DATATYPE_T.load() {
+            let a_cpls = get_cpl(a as *const DataType);
+            a_cpls.contains(&b)
+        } else {
+            panic!(
+                "wrong type for parameter specifiers: {:?} {:?}",
+                a_kind, b_kind
+            );
         }
     }
 }
@@ -426,6 +436,12 @@ impl<'ctx> ExecutionSession<'ctx> {
                 typedef: AlphaTypeDef::Abstract,
             },
         );
+        let void_typedef = AlphaType {
+            name: symbol("Void"),
+            supertype: symbol("Any"),
+            typedef: AlphaTypeDef::Struct { fields: vec![] },
+        };
+        let void_t = self.build_type_specifier(&void_typedef)?;
         let datatype_typedef = AlphaType {
             name: symbol("DataType"),
             supertype: symbol("Any"),
@@ -496,6 +512,19 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.global_env
             .insert(symbol("Any"), EnvValue::Global("Any".to_string()));
 
+        self.globals.add_global("Void", datatype_ptr_t);
+        self.jit
+            .define_symbol("Void", VOID_T.as_ref() as *const _ as usize)?;
+        self.global_env
+            .insert(symbol("Void"), EnvValue::Global("Void".to_string()));
+
+        self.globals
+            .add_global("void", void_t.pointer_type(AddressSpace::Generic));
+        self.jit
+            .define_symbol("void", VOID.as_ref() as *const _ as usize)?;
+        self.global_env
+            .insert(symbol("void"), EnvValue::Global("void".to_string()));
+
         // Add a copy of the globals module to jit, so globals with initializers are defined.
         self.load_module(self.globals.clone())?;
 
@@ -520,10 +549,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             type_of_t,
             Method {
-                signature: vec![
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                ],
+                signature: vec![ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr],
                 instance: alpha_type_of,
             },
         );
@@ -535,11 +561,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             f64_mul_t,
             Method {
-                signature: vec![
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                    ParamSpecifier::SubtypeOf(f64_t as AnyPtr),
-                    ParamSpecifier::SubtypeOf(f64_t as AnyPtr),
-                ],
+                signature: vec![ANY_T.load() as AnyPtr, f64_t as AnyPtr, f64_t as AnyPtr],
                 instance: self.jit.lookup::<GenericFn>("f64_mul")?,
             },
         );
@@ -548,11 +570,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             i64_mul_t,
             Method {
-                signature: vec![
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                    ParamSpecifier::SubtypeOf(i64_t as AnyPtr),
-                    ParamSpecifier::SubtypeOf(i64_t as AnyPtr),
-                ],
+                signature: vec![ANY_T.load() as AnyPtr, i64_t as AnyPtr, i64_t as AnyPtr],
                 instance: self.jit.lookup::<GenericFn>("i64_mul")?,
             },
         );
@@ -562,50 +580,35 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             print_t,
             Method {
-                signature: vec![
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                ],
+                signature: vec![ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr],
                 instance: alpha_print_any,
             },
         );
         self.function_add_method(
             print_t,
             Method {
-                signature: vec![
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                    ParamSpecifier::SubtypeOf(VOID_T.load() as AnyPtr),
-                ],
+                signature: vec![ANY_T.load() as AnyPtr, VOID_T.load() as AnyPtr],
                 instance: alpha_print_void,
             },
         );
         self.function_add_method(
             print_t,
             Method {
-                signature: vec![
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                    ParamSpecifier::SubtypeOf(i64_t as AnyPtr),
-                ],
+                signature: vec![ANY_T.load() as AnyPtr, i64_t as AnyPtr],
                 instance: alpha_print_i64,
             },
         );
         self.function_add_method(
             print_t,
             Method {
-                signature: vec![
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                    ParamSpecifier::SubtypeOf(f64_t as AnyPtr),
-                ],
+                signature: vec![ANY_T.load() as AnyPtr, f64_t as AnyPtr],
                 instance: alpha_print_f64,
             },
         );
         self.function_add_method(
             print_t,
             Method {
-                signature: vec![
-                    ParamSpecifier::SubtypeOf(ANY_T.load() as AnyPtr),
-                    ParamSpecifier::SubtypeOf(DATATYPE_T.load() as AnyPtr),
-                ],
+                signature: vec![ANY_T.load() as AnyPtr, DATATYPE_T.load() as AnyPtr],
                 instance: alpha_print_datatype,
             },
         );
@@ -830,15 +833,13 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             type_ptr,
             Method {
-                signature: std::iter::once(ParamSpecifier::Eq(type_ptr))
+                signature: std::iter::once(types::Type::new(type_ptr as *const DataType) as AnyPtr)
                     .chain(fields.iter().map(|(_name, type_)| {
                         let llvm_name = match self.global_env.lookup(type_.name) {
                             Some(EnvValue::Global(s)) => s,
                             _ => panic!("unable to lookup: {:?}", type_.name),
                         };
-                        ParamSpecifier::SubtypeOf(unsafe {
-                            *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap()
-                        })
+                        unsafe { *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap() }
                     }))
                     .collect(),
                 instance: constructor_code,
@@ -881,8 +882,8 @@ impl<'ctx> ExecutionSession<'ctx> {
                 fn_obj,
                 Method {
                     signature: vec![
-                        ParamSpecifier::Eq(fn_obj),
-                        ParamSpecifier::SubtypeOf(type_ptr),
+                        types::Type::new(fn_obj as *const DataType) as AnyPtr,
+                        type_ptr,
                     ],
                     instance: instance,
                 },
@@ -911,15 +912,13 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.function_add_method(
             fn_obj,
             Method {
-                signature: std::iter::once(ParamSpecifier::Eq(fn_obj))
+                signature: std::iter::once(types::Type::new(fn_obj as *const DataType) as AnyPtr)
                     .chain(def.prototype.params.iter().map(|p| {
                         let llvm_name = match self.global_env.lookup(p.typ) {
                             Some(EnvValue::Global(s)) => s,
                             _ => panic!("unable to lookup: {:?}", p.typ),
                         };
-                        ParamSpecifier::SubtypeOf(unsafe {
-                            *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap()
-                        })
+                        unsafe { *self.jit.lookup::<*const AnyPtr>(llvm_name).unwrap() }
                     }))
                     .collect(),
                 instance,

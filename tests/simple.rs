@@ -12,7 +12,11 @@ output_test!(
     test_empty_constructor,
     r#"
       type X = {}
-      X()
+      {
+        X()
+        # suppress output
+        void
+      }
     "#,
     ""
 );
@@ -20,7 +24,11 @@ output_test!(
     test_constructor_with_arguments,
     r#"
       type X = { x, y: i64 }
-      X(2.13, 3)
+      {
+        X(2.13, 3)
+        # suppress output
+        void
+      }
     "#,
     ""
 );

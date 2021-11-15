@@ -157,16 +157,52 @@ impl AlphaValue for DataType {
 }
 
 #[derive(Debug)]
-pub enum ParamSpecifier {
-    Eq(AnyPtr),
-    SubtypeOf(AnyPtr),
-}
-
-#[derive(Debug)]
 pub struct Method {
-    pub signature: Vec<ParamSpecifier>,
+    /// Values can be either types (type=DataType) or a Type{T} (type=Type).
+    ///
+    /// If parameter specifier is a type, any subtype is accepted.
+    ///
+    /// If parameter specifier is a Type{T}, only type value T is accepted.
+    pub signature: Vec<AnyPtr>,
     // compiled instance of the method
     pub instance: GenericFn,
+}
+
+/// Type{T} is a type whose only value is a type object T.
+///
+/// Ideally, it should be a polymorphic type, but Alpha does not yet support polymorphic types.
+#[derive(Debug)]
+#[repr(C)]
+pub struct Type {
+    pub t: *const DataType,
+}
+impl Type {
+    pub fn new(t: *const DataType) -> *const Type {
+        unsafe {
+            let this = gc::allocate(std::mem::size_of::<Self>()) as *mut Self;
+            set_typetag(this, Self::typetag());
+            *this = Type { t };
+            this
+        }
+    }
+}
+impl AlphaValue for Type {
+    fn typetag() -> *const DataType {
+        TYPE_T.load()
+    }
+    fn datatype() -> DataType {
+        DataType {
+            name: symbol("Type"),
+            supertype: ANY_T.load(),
+            is_abstract: false,
+            methods: Vec::new(),
+            size: std::mem::size_of::<Type>() as u64,
+            n_ptrs: 1,
+        }
+    }
+    fn as_anyptr(&self) -> AnyPtr {
+        self as *const Self as AnyPtr
+    }
 }
 
 /// `Void` is the unit type in the Alpha type hierarchy. It has only one value — `void`.
@@ -191,6 +227,7 @@ impl AlphaValue for Void {
 }
 
 gc_global!(pub ANY_T: DataType);
+gc_global!(pub TYPE_T: DataType);
 gc_global!(pub DATATYPE_T: DataType);
 gc_global!(pub SYMBOL_T: DataType);
 gc_global!(pub SVEC_T: DataType);
@@ -205,7 +242,7 @@ unsafe fn initialize_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
 pub fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| unsafe {
-        let globals = [&ANY_T, &DATATYPE_T, &SYMBOL_T, &SVEC_T, &VOID_T];
+        let globals = [&ANY_T, &TYPE_T, &DATATYPE_T, &SYMBOL_T, &SVEC_T, &VOID_T];
         // SYMBOL_T must be allocated first because `symbol()` functions requires it to be set. The
         // DataType itself can be initialized later though.
         //
