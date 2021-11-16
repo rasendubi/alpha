@@ -18,7 +18,7 @@ output_test!(
         void
       }
     "#,
-    ""
+    "\n"
 );
 output_test!(
     test_constructor_with_arguments,
@@ -30,7 +30,7 @@ output_test!(
         void
       }
     "#,
-    ""
+    "\n"
 );
 output_test!(
     test_accessors,
@@ -53,3 +53,16 @@ output_test!(
 );
 
 output_test!(test_string_print, "print(\"hello\")", "hello\n");
+
+output_test!(
+    test_method_override,
+    r#"
+      type X = {}
+
+      fn x(y: X) = 1
+      fn x(y: X) = 2
+
+      x(X())
+    "#,
+    "2\n"
+);

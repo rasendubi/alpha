@@ -99,6 +99,31 @@ impl Method {
     }
 }
 
+unsafe fn signature_equal(a_signature: *const SVec, b_signature: *const SVec) -> bool {
+    (*a_signature).len() == (*b_signature).len()
+        && (*a_signature)
+            .elements()
+            .iter()
+            .zip((*b_signature).elements())
+            .all(|(a, b)| param_specifier_equal(*a, *b))
+}
+
+fn param_specifier_equal(a: AnyPtr, b: AnyPtr) -> bool {
+    unsafe {
+        let a_kind = type_of(a);
+        let b_kind = type_of(b);
+        if a_kind != b_kind {
+            false
+        } else if a_kind == TYPE_T.load() {
+            (*(a as *const types::Type)).t == (*(b as *const types::Type)).t
+        } else if a_kind == DATATYPE_T.load() {
+            a == b
+        } else {
+            panic!("wrong type for parameter specifiers: {:?}", a_kind);
+        }
+    }
+}
+
 fn param_specifier_is_applicable(ps: AnyPtr, v: AnyPtr) -> bool {
     unsafe {
         let ps_kind = type_of(ps);
@@ -1027,7 +1052,21 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn function_add_method(&mut self, fn_obj: AnyPtr, method: *const Method) {
         unsafe {
             let fn_t = type_of(fn_obj) as *mut DataType;
-            (*fn_t).methods = SVec::push((*fn_t).methods, method as AnyPtr);
+            let methods = &*(*fn_t).methods;
+            let override_pos = methods.elements().iter().position(|m| {
+                let m = &*(*m as *const Method);
+
+                signature_equal(m.signature, (&*method).signature)
+            });
+            match override_pos {
+                Some(pos) => {
+                    eprintln!("warning: re-defining method");
+                    (*fn_t).methods = SVec::set((*fn_t).methods, pos, method as AnyPtr);
+                }
+                None => {
+                    (*fn_t).methods = SVec::push((*fn_t).methods, method as AnyPtr);
+                }
+            }
         }
     }
 

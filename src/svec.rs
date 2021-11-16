@@ -5,8 +5,6 @@ use crate::gc;
 use crate::symbol::symbol;
 use crate::types::{set_typetag, AlphaValue, AnyPtr, DataType, ANY_T, SVEC_EMPTY, SVEC_T};
 
-// TODO: re-implement debug
-#[derive(Debug)]
 #[repr(C)]
 pub struct SVec {
     /// Number of elements.
@@ -25,16 +23,36 @@ impl SVec {
         }
     }
 
-    pub fn push(this: *const Self, ptr: AnyPtr) -> *const Self {
+    /// Appends an element to the back of a collection.
+    ///
+    /// This is O(n) as it allocates a new SVec and copies elements over.
+    pub fn push(this: *const Self, value: AnyPtr) -> *const Self {
         unsafe {
             let new_len = (*this).len + 1;
             let new = Self::alloc(new_len);
             let this_elements = (*this).elements();
             let new_elements = (*new).elements_mut();
             new_elements[0..new_len - 1].copy_from_slice(this_elements);
-            new_elements[new_len - 1] = ptr;
+            new_elements[new_len - 1] = value;
             new
         }
+    }
+
+    pub fn set(this: *const Self, index: usize, value: AnyPtr) -> *const Self {
+        unsafe {
+            let new = Self::clone_mut(this);
+            (*new).elements_mut()[index] = value;
+            new
+        }
+    }
+
+    unsafe fn clone_mut(this: *const Self) -> *mut Self {
+        let len = (*this).len;
+        let new = Self::alloc(len);
+        let this_elements = (*this).elements();
+        let new_elements = (*new).elements_mut();
+        new_elements.copy_from_slice(this_elements);
+        new
     }
 
     unsafe fn alloc(len: usize) -> *mut Self {
@@ -59,6 +77,18 @@ impl SVec {
         let len = self.len;
         let this = self as *mut SVec as *mut AnyPtr;
         unsafe { std::slice::from_raw_parts_mut(this.add(1), len) }
+    }
+}
+
+impl std::fmt::Debug for SVec {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "{:?}", self.elements())
+    }
+}
+
+impl std::cmp::PartialEq<SVec> for SVec {
+    fn eq(&self, other: &SVec) -> bool {
+        self.elements().eq(other.elements())
     }
 }
 
