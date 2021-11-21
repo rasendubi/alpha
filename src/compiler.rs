@@ -14,7 +14,7 @@ use crate::env::Env;
 use crate::execution_session::EnvValue;
 use crate::exp;
 use crate::exp::Exp;
-use crate::symbol::symbol;
+use crate::symbol;
 use crate::types::{AlphaType, AlphaTypeDef};
 
 pub struct Compiler<'a, 'ctx> {

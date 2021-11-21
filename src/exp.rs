@@ -5,7 +5,7 @@ use std::error::Error;
 use simple_error::{bail, simple_error};
 
 use crate::sexp::SExp;
-use crate::symbol::{symbol, Symbol};
+use crate::{symbol, Symbol};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Exp {

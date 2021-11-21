@@ -5,6 +5,7 @@ pub mod error;
 pub mod module;
 pub mod orc;
 pub mod pass_manager;
+pub mod pass_registry;
 pub mod string;
 pub mod types;
 pub mod values;

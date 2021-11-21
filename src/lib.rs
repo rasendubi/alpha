@@ -7,10 +7,9 @@ mod init;
 mod lexer;
 mod parser;
 mod sexp;
-mod string;
-mod svec;
-mod symbol;
-mod types;
+pub mod types;
 
 pub use execution_session::{set_stdout, ExecutionSession};
 pub use init::init;
+// re-export symbols as they are widely used
+pub use types::{symbol, Symbol};

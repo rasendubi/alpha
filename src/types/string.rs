@@ -1,12 +1,12 @@
 use crate::gc;
-use crate::symbol::symbol;
+use crate::symbol;
 use crate::types::*;
 
 pub struct AlphaString {
     /// Length of the string in bytes, not counting the final NUL.
     len: usize,
-    // follows directly after this struct:
-    // bytes: [u8; len + 1], // NULL-terminated
+    /// Dynamically-sized and NULL terminated. Actual type is [u8; len + 1]
+    bytes: [u8; 0], // NULL-terminated
 }
 
 impl AlphaString {
@@ -30,7 +30,7 @@ impl AlphaString {
     pub unsafe fn allocate_uninit(len: usize) -> *mut AlphaString {
         let this = gc::allocate(std::mem::size_of::<AlphaString>() + len + 1) as *mut AlphaString;
         set_typetag(this, STRING_T.load());
-        *this = AlphaString { len };
+        *this = AlphaString { len, bytes: [] };
         this
     }
 
@@ -48,19 +48,11 @@ impl AlphaString {
     }
 
     fn bytes(&self) -> &[u8] {
-        unsafe {
-            let len = self.len;
-            let ptr = (self as *const Self).add(1) as *const u8;
-            std::slice::from_raw_parts(ptr, len + 1)
-        }
+        unsafe { std::slice::from_raw_parts(self.bytes.as_ptr(), self.len + 1) }
     }
 
     fn bytes_mut(&mut self) -> &mut [u8] {
-        unsafe {
-            let len = self.len;
-            let ptr = (self as *mut Self).add(1) as *mut u8;
-            std::slice::from_raw_parts_mut(ptr, len + 1)
-        }
+        unsafe { std::slice::from_raw_parts_mut(self.bytes.as_mut_ptr(), self.len + 1) }
     }
 }
 
@@ -73,10 +65,14 @@ impl AlphaValue for AlphaString {
             name: symbol("String"),
             supertype: ANY_T.load(),
             is_abstract: false,
-            size: 0, // dynamically-sized
+            size: usize::MAX, // dynamically-sized
             n_ptrs: 0,
             methods: SVEC_EMPTY.load(),
+            pointers: [],
         }
+    }
+    fn size(ptr: *const AlphaString) -> usize {
+        unsafe { std::mem::size_of::<AlphaString>() + (*ptr).len + 1 }
     }
 }
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::symbol::Symbol;
+use crate::Symbol;
 
 #[derive(Debug)]
 pub struct Env<'a, T> {

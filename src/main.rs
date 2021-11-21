@@ -20,7 +20,14 @@ impl Validator for InputValidator {
 const HISTORY_FILE: &str = "history.txt";
 
 fn main() {
-    pretty_env_logger::init();
+    tracing_subscriber::fmt()
+        .without_time()
+        .with_target(false)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        // disable colors for non-terminal output
+        .with_ansi(atty::is(atty::Stream::Stderr))
+        .init();
     alpha::init();
 
     let h = InputValidator {
