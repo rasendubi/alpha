@@ -1,16 +1,15 @@
 mod datatype;
 mod method;
+mod primitive;
 mod string;
 mod svec;
 mod symbol;
 mod r#type;
 mod void;
 
-use std::error::Error;
-use std::sync::Once;
-
 pub use self::datatype::*;
 pub use self::method::*;
+pub use self::primitive::*;
 pub use self::r#type::*;
 pub use self::string::*;
 pub use self::svec::*;
@@ -22,6 +21,9 @@ use crate::exp::{TypeDefinition, TypeSpecifier};
 use crate::gc;
 use crate::gc::GcBox;
 use crate::gc_global;
+
+use std::error::Error;
+use std::sync::Once;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct AlphaType {
@@ -164,6 +166,8 @@ gc_global!(pub VOID_T: DataType);
 gc_global!(pub VOID: Void);
 gc_global!(pub METHOD_T: DataType);
 gc_global!(pub STRING_T: DataType);
+gc_global!(pub F64_T: DataType);
+gc_global!(pub I64_T: DataType);
 
 #[inline]
 unsafe fn allocate_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
@@ -208,6 +212,8 @@ pub fn init() {
         allocate_global_type::<Void>(&VOID_T);
         allocate_global_type::<Method>(&METHOD_T);
         allocate_global_type::<AlphaString>(&STRING_T);
+        allocate_global_type::<AlphaI64>(&I64_T);
+        allocate_global_type::<AlphaF64>(&F64_T);
 
         // SVEC_EMPTY must be initialized before calling initialize_global_type() as many
         // implementations of AlphaValue::datatype() use SVEC_EMPTY to initialize methods field.
@@ -238,6 +244,8 @@ pub fn init() {
         initialize_global_type::<Method>(&METHOD_T);
         initialize_global_type::<AlphaString>(&STRING_T);
         initialize_global_type::<Type>(&TYPE_T);
+        initialize_global_type::<AlphaI64>(&I64_T);
+        initialize_global_type::<AlphaF64>(&F64_T);
     });
 }
 
@@ -289,12 +297,17 @@ pub unsafe fn typetag_ptr<T>(ptr: *const T) -> *mut *const DataType {
     (ptr as *mut *const DataType).sub(1)
 }
 
-pub trait AlphaValue {
+pub trait AlphaValue: Sized {
     fn typetag() -> *const DataType;
+
     fn datatype() -> DataType;
-    fn size(ptr: *const Self) -> usize;
-    fn as_anyptr(&self) -> AnyPtr {
-        self as *const Self as AnyPtr
+    fn pointers() -> &'static [usize] {
+        static PTRS: [usize; 0] = [];
+        &PTRS
+    }
+
+    fn size(_ptr: *const Self) -> usize {
+        std::mem::size_of::<Self>()
     }
 
     fn trace_pointers<F>(ptr: *mut Self, mut trace_ptr: F)
@@ -302,17 +315,12 @@ pub trait AlphaValue {
         F: FnMut(*mut AnyPtrMut) -> bool,
     {
         unsafe {
-            let ty = get_typetag(ptr as AnyPtr); // self datatype
+            let ty = get_typetag(ptr); // self datatype
             let ptr_offsets = (*ty).pointers();
             for offset in ptr_offsets {
                 let field = (ptr as *mut u8).add(*offset) as *mut AnyPtrMut;
                 trace_ptr(field);
             }
         }
-    }
-
-    fn pointers() -> &'static [usize] {
-        static PTRS: [usize; 0] = [];
-        &PTRS
     }
 }

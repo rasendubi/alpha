@@ -19,8 +19,10 @@ use crate::types::{AlphaType, AlphaTypeDef};
 
 pub struct Compiler<'a, 'ctx> {
     context: &'ctx Context,
-    builder: Builder,
     module: &'a Module,
+    prologue_builder: Builder,
+    builder: Builder,
+    epilogue_builder: Builder,
     global_env: &'a Env<'a, EnvValue>,
 }
 
@@ -53,7 +55,9 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     ) -> Result<Value, Box<dyn Error>> {
         let mut compiler = Compiler {
             context,
+            prologue_builder: context.create_builder(),
             builder: context.create_builder(),
+            epilogue_builder: context.create_builder(),
             module,
             global_env: env,
         };
@@ -69,7 +73,9 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     ) -> Result<Value, Box<dyn Error>> {
         let mut compiler = Compiler {
             context,
+            prologue_builder: context.create_builder(),
             builder: context.create_builder(),
+            epilogue_builder: context.create_builder(),
             module,
             global_env: env,
         };
@@ -87,12 +93,61 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     ) -> Result<Value, Box<dyn Error>> {
         let mut compiler = Compiler {
             context,
+            prologue_builder: context.create_builder(),
             builder: context.create_builder(),
+            epilogue_builder: context.create_builder(),
             module,
             global_env: env,
         };
 
         compiler.compile_access(def, i, name)
+    }
+
+    fn get_llvm_gcroot(&mut self) -> Value {
+        self.module.get_function("llvm.gcroot").unwrap_or_else(|| {
+            let ptr_t = self.context.int_type(8).pointer_type(AddressSpace::Generic);
+            self.module.add_function(
+                "llvm.gcroot",
+                self.context
+                    .void_type()
+                    .function_type(&[ptr_t.pointer_type(AddressSpace::Generic), ptr_t], false),
+            )
+        })
+    }
+
+    fn build_gcroot(&mut self, name: &str) -> Value {
+        let any_ptr_t = self
+            .context
+            .get_named_struct("Any")
+            .unwrap()
+            .pointer_type(AddressSpace::Generic);
+
+        let alloca = self.prologue_builder.build_alloca(any_ptr_t, name);
+
+        let gcroot = self.get_llvm_gcroot();
+        let ptr_t = self
+            .context
+            .int_type(8)
+            .pointer_type(AddressSpace::Generic)
+            .pointer_type(AddressSpace::Generic);
+        let alloca_as_ptr = self.prologue_builder.build_pointer_cast(
+            alloca,
+            ptr_t,
+            &(name.to_string() + "_as_gcroot"),
+        );
+        self.prologue_builder.build_call(
+            gcroot,
+            &[
+                alloca_as_ptr,
+                self.context
+                    .int_type(8)
+                    .pointer_type(AddressSpace::Generic)
+                    .const_null(),
+            ],
+            "",
+        );
+
+        alloca
     }
 
     fn build_allocate(&mut self, size: u64, name: &str) -> Value {
@@ -150,15 +205,15 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         };
 
         let function = self.compile_prototype(&proto)?;
-        let entry = self.context.append_basic_block(function, "entry");
-        self.builder.position_at_end(entry);
+        self.enter_function(function);
         let env = self.build_fn_prologue(self.global_env, &proto, function)?;
 
         let t = self.context.get_named_struct(def.name.as_str()).unwrap();
         let res = self.build_dyn_allocate(t.size(), "result");
 
-        let type_ = self.compile_exp(self.global_env, &Exp::Symbol(def.name))?;
-        self.build_set_typetag(res, type_);
+        let ty = self.compile_exp(self.global_env, &Exp::Symbol(def.name))?;
+        let ty = self.load_value(ty);
+        self.build_set_typetag(res, ty);
 
         let result_as_t = self.builder.build_pointer_cast(
             res,
@@ -168,6 +223,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
         for (i, (name, typ)) in fields.iter().enumerate() {
             let value = self.compile_exp(&env, &Exp::Symbol(*name))?;
+            let value = self.load_value(value);
             let value = if typ.typedef.is_inlinable() {
                 let field_t = self.context.get_named_struct(typ.name.as_str()).unwrap();
                 let field_as_t = self.builder.build_pointer_cast(
@@ -185,7 +241,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             self.builder.build_store(field_ptr, value);
         }
 
-        self.builder.build_ret(res);
+        self.epilogue_builder.build_ret(res);
 
         if function.verify_function() {
             Ok(function)
@@ -225,40 +281,53 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         };
 
         let function = self.compile_prototype(&proto)?;
-        let entry = self.context.append_basic_block(function, "entry");
-        self.builder.position_at_end(entry);
+        self.enter_function(function);
         let env = self.build_fn_prologue(self.global_env, &proto, function)?;
 
         let t = self.context.get_named_struct(def.name.as_str()).unwrap();
 
         let this = self.compile_exp(&env, &Exp::Symbol(this_s))?;
-        let this_as_t = self.builder.build_pointer_cast(
-            this,
-            t.pointer_type(AddressSpace::Generic),
-            "this_as_t",
-        );
-        let field_ptr = self
-            .builder
-            .build_struct_gep(this_as_t, i as u32, "field_ptr");
-        let field = self.builder.build_load(field_ptr, "field");
         let field = if typ.typedef.is_inlinable() {
             // box value
             let field_t = self.context.get_named_struct(typ.name.as_str()).unwrap();
-            let res = self.build_dyn_allocate(field_t.size(), "result");
-            let field_type = self.compile_exp(self.global_env, &Exp::Symbol(typ.name))?;
+            let res = self.build_dyn_allocate(field_t.size(), "result"); // safepoint!
+            let field_type = self.compile_exp(self.global_env, &Exp::Symbol(typ.name))?; // this must not allocate
+            let field_type = self.load_value(field_type);
+
             self.build_set_typetag(res, field_type);
             let res_as_t = self.builder.build_pointer_cast(
                 res,
                 field_t.pointer_type(AddressSpace::Generic),
                 "res_as_t",
             );
+
+            let this = self.load_value(this);
+            let this_as_t = self.builder.build_pointer_cast(
+                this,
+                t.pointer_type(AddressSpace::Generic),
+                "this_as_t",
+            );
+            let field_ptr = self
+                .builder
+                .build_struct_gep(this_as_t, i as u32, "field_ptr");
+            let field = self.builder.build_load(field_ptr, "field");
+
             self.builder.build_store(res_as_t, field);
             res
         } else {
-            field
+            let this = self.load_value(this);
+            let this_as_t = self.builder.build_pointer_cast(
+                this,
+                t.pointer_type(AddressSpace::Generic),
+                "this_as_t",
+            );
+            let field_ptr = self
+                .builder
+                .build_struct_gep(this_as_t, i as u32, "field_ptr");
+            self.builder.build_load(field_ptr, "field")
         };
 
-        self.builder.build_ret(field);
+        self.epilogue_builder.build_ret(field);
 
         if function.verify_function() {
             Ok(function)
@@ -280,8 +349,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             Some(body) => body,
         };
 
-        let entry = self.context.append_basic_block(function, "entry");
-        self.builder.position_at_end(entry);
+        self.enter_function(function);
 
         let env = self.build_fn_prologue(self.global_env, &f.prototype, function)?;
 
@@ -294,8 +362,11 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             .get_named_struct("Any")
             .unwrap()
             .pointer_type(AddressSpace::Generic);
-        let result = self.builder.build_pointer_cast(body, any_ptr, "result");
-        self.builder.build_ret(result);
+        let body = self.load_value(body);
+        let result = self
+            .epilogue_builder
+            .build_pointer_cast(body, any_ptr, "result");
+        self.epilogue_builder.build_ret(result);
 
         if function.verify_function() {
             Ok(function)
@@ -330,8 +401,25 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         let fn_type = ret_type.function_type(&params_types, false);
 
         let fn_val = self.module.add_function(&name, fn_type);
+        fn_val.set_gc("shadow-stack");
 
         Ok(fn_val)
+    }
+
+    fn enter_function(&mut self, f: Value) {
+        let prologue = self.context.append_basic_block(f, "prologue");
+        let main = self.context.append_basic_block(f, "main");
+        let epilogue = self.context.append_basic_block(f, "epilogue");
+
+        self.prologue_builder.position_at_end(prologue);
+        let br_main = self.prologue_builder.build_br(main);
+        self.prologue_builder.position_before(br_main);
+
+        self.builder.position_at_end(main);
+        let br_epi = self.builder.build_br(epilogue);
+        self.builder.position_before(br_epi);
+
+        self.epilogue_builder.position_at_end(epilogue);
     }
 
     fn build_fn_prologue<'e>(
@@ -354,7 +442,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             .pointer_type(AddressSpace::Generic);
         let i64_t = self.context.int_type(64);
 
-        let args = self.builder.build_pointer_cast(
+        let args = self.prologue_builder.build_pointer_cast(
             args,
             i64_t.pointer_type(AddressSpace::Generic),
             "args_cells",
@@ -364,19 +452,36 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         for (i, param) in proto.params.iter().enumerate() {
             let param_symbol = param.name;
             let param_name = param_symbol.as_str();
-            let p =
-                self.builder
-                    .build_gep(args, &[i64_t.const_int((i + 1) as u64, false)], param_name);
-            let p = self.builder.build_pointer_cast(
+            let p = self.prologue_builder.build_gep(
+                args,
+                &[i64_t.const_int((i + 1) as u64, false)],
+                param_name,
+            );
+            let p = self.prologue_builder.build_pointer_cast(
                 p,
                 any_ptr_t.pointer_type(AddressSpace::Generic),
                 param_name,
             );
-            let p = self.builder.build_load(p, param_name);
-            env.insert(param_symbol, EnvValue::Local(p));
+            let p = self.prologue_builder.build_load(p, param_name);
+            let gcroot = self.build_gcroot(param_name);
+            self.prologue_builder.build_store(gcroot, p);
+            env.insert(param_symbol, EnvValue::Local(gcroot));
         }
 
         Ok(env)
+    }
+
+    fn load_value(&mut self, value: Value) -> Value {
+        let ptr = self.builder.build_pointer_cast(
+            value,
+            self.context
+                .get_named_struct("Any")
+                .unwrap()
+                .pointer_type(AddressSpace::Generic)
+                .pointer_type(AddressSpace::Generic),
+            "",
+        );
+        self.builder.build_load(ptr, "")
     }
 
     fn compile_exp(&mut self, env: &Env<EnvValue>, exp: &Exp) -> Result<Value, Box<dyn Error>> {
@@ -386,22 +491,25 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 Some(EnvValue::Local(value)) => *value,
                 Some(EnvValue::Global(name)) => {
                     let global = self.module.get_global(name).unwrap();
-                    let value = self.builder.build_load(global, name);
-                    self.builder.build_pointer_cast(
-                        value,
-                        self.context
-                            .get_named_struct("Any")
-                            .unwrap()
-                            .pointer_type(AddressSpace::Generic),
-                        &(name.to_string() + "_any"),
-                    )
+                    global
+                    // let value = self.builder.build_load(global, name);
+                    // self.builder.build_pointer_cast(
+                    //     value,
+                    //     self.context
+                    //         .get_named_struct("Any")
+                    //         .unwrap()
+                    //         .pointer_type(AddressSpace::Generic),
+                    //     &(name.to_string() + "_any"),
+                    // )
                 }
                 None => {
                     bail!("unable to find binding for {}", (*s).as_str());
                 }
             },
             Exp::Float(n) => {
+                let place = self.build_gcroot("fptr_place");
                 let ptr = self.build_allocate(8, "fptr_any");
+                self.builder.build_store(place, ptr);
                 let fptr = self.builder.build_pointer_cast(
                     ptr,
                     self.context.f64_type().pointer_type(AddressSpace::Generic),
@@ -412,12 +520,15 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
                 let f64_symbol = symbol("f64");
                 let f64t = self.compile_exp(env, &Exp::Symbol(f64_symbol))?;
+                let f64t = self.load_value(f64t);
                 self.build_set_typetag(ptr, f64t);
 
-                ptr.into()
+                place
             }
             Exp::Integer(n) => {
+                let place = self.build_gcroot("iptr_place");
                 let ptr = self.build_allocate(8, "iptr_any");
+                self.builder.build_store(place, ptr);
                 let iptr = self.builder.build_pointer_cast(
                     ptr,
                     self.context
@@ -430,11 +541,14 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
                 let i64_symbol = symbol("i64");
                 let i64t = self.compile_exp(env, &Exp::Symbol(i64_symbol))?;
+                let i64t = self.load_value(i64t);
                 self.build_set_typetag(ptr, i64t);
 
-                ptr.into()
+                place
             }
             Exp::String(s) => {
+                let place = self.build_gcroot("str_root");
+
                 let len = s.len();
                 let s = self.builder.build_global_string_ptr(s, "str_literal");
                 let mk_str = self.module.get_function("mk_str").unwrap();
@@ -443,9 +557,13 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                     &[s, self.context.int_type(64).const_int(len as u64, false)],
                     "string",
                 );
-                r
+
+                self.builder.build_store(place, r);
+
+                place
             }
             Exp::Call(call) => {
+                let place = self.build_gcroot("call_root");
                 let f = self.compile_exp(env, &call.fun)?;
 
                 let mut args = Vec::new();
@@ -453,7 +571,14 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                     args.push(self.compile_exp(env, arg)?);
                 }
 
-                self.build_call(f, &args, "tmp")?
+                let args = args
+                    .iter()
+                    .map(|arg| self.load_value(*arg))
+                    .collect::<Vec<_>>();
+                let res = self.build_call(f, &args, "tmp")?;
+                self.builder.build_store(place, res);
+
+                place
             }
             Exp::Block(block) => {
                 let mut result = None;
@@ -486,6 +611,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         let size = i64_t.const_int((args.len() + 1) as u64, false);
         let args_ptr = self.builder.build_array_alloca(any_ptr_t, size, "args");
 
+        let f = self.builder.build_load(f, "f_ptr");
         self.builder.build_store(
             self.builder
                 .build_gep(args_ptr, &[i64_t.const_int(0 as u64, false)], "arg_ptr"),

@@ -2,6 +2,7 @@ pub mod basic_block;
 pub mod builder;
 pub mod context;
 pub mod error;
+pub mod gc;
 pub mod module;
 pub mod orc;
 pub mod pass_manager;

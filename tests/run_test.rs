@@ -1,8 +1,16 @@
 use std::io;
 use std::io::Write;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
+
+use once_cell::sync::Lazy;
 
 use alpha::{init, set_stdout, ExecutionSession};
+
+static ES: Lazy<Mutex<ExecutionSession>> = Lazy::new(|| {
+    pretty_env_logger::init();
+    init();
+    Mutex::new(ExecutionSession::new())
+});
 
 #[allow(unused_macros)]
 macro_rules! output_test {
@@ -17,16 +25,11 @@ macro_rules! output_test {
 }
 
 pub fn run_output_test(input: &str) -> String {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        pretty_env_logger::init();
-        init();
-    });
+    let mut es = ES.lock().unwrap();
 
     let buf = Buffer::new();
     set_stdout(Box::new(buf.clone()));
 
-    let mut es = ExecutionSession::new();
     es.eval(input).unwrap();
 
     let mut b = buf.0.lock().unwrap();

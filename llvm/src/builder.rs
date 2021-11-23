@@ -12,11 +12,28 @@ pub struct Builder(pub(crate) LLVMBuilderRef);
 
 impl Builder {
     fn new(builder: LLVMBuilderRef) -> Self {
+        assert!(!builder.is_null());
         Builder(builder)
     }
 
     pub fn new_in_context(context: &Context) -> Self {
         unsafe { Builder::new(core::LLVMCreateBuilderInContext(context.0)) }
+    }
+
+    pub fn position(&self, bb: BasicBlock, instr: Option<Value>) {
+        unsafe {
+            core::LLVMPositionBuilder(
+                self.0,
+                bb.0,
+                instr.map(|x| x.0).unwrap_or(std::ptr::null_mut()),
+            );
+        }
+    }
+
+    pub fn position_before(&self, instr: Value) {
+        unsafe {
+            core::LLVMPositionBuilderBefore(self.0, instr.0);
+        }
     }
 
     /// # Examples
@@ -32,7 +49,9 @@ impl Builder {
     /// builder.position_at_end(bb);
     /// ```
     pub fn position_at_end(&self, bb: BasicBlock) {
-        unsafe { core::LLVMPositionBuilderAtEnd(self.0, bb.0) }
+        unsafe {
+            core::LLVMPositionBuilderAtEnd(self.0, bb.0);
+        }
     }
 
     pub fn build_ret_void(&self) -> Value {
@@ -41,6 +60,10 @@ impl Builder {
 
     pub fn build_ret(&self, value: Value) -> Value {
         unsafe { Value::new(core::LLVMBuildRet(self.0, value.0)) }
+    }
+
+    pub fn build_br(&self, bb: BasicBlock) -> Value {
+        unsafe { Value::new(core::LLVMBuildBr(self.0, bb.0)) }
     }
 
     pub fn build_alloca(&self, typ: Type, name: &str) -> Value {

@@ -2,6 +2,7 @@ use crate::gc;
 use crate::symbol;
 use crate::types::*;
 
+#[repr(C)]
 pub struct AlphaString {
     /// Length of the string in bytes, not counting the final NUL.
     len: usize,

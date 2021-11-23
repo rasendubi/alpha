@@ -12,6 +12,10 @@ use tracing::{debug, trace};
 
 use crate::types::*;
 
+pub use llvm::gc::shadow_stack::GcRootChain;
+
+pub static mut GC_ROOT_CHAIN: GcRootChain = std::ptr::null_mut();
+
 // TODO: this has to be thread-local when Alpha supports multi-threading.
 static mut GC_ROOTS: *const GcFrame = std::ptr::null();
 
@@ -22,10 +26,17 @@ fn gc_init() {
         GC_GLOBAL_ROOTS.write(Mutex::new(HashSet::new()));
     })
 }
+#[tracing::instrument]
 pub fn add_global_root(root: GcRoot<'static>) {
     gc_init();
     unsafe {
         let mut roots = GC_GLOBAL_ROOTS.assume_init_ref().lock().unwrap();
+        trace!(
+            "Adding root: {:?} -> {:?}",
+            root.as_anyptr(),
+            *root.as_anyptr()
+        );
+        debug_ptr(*root.as_anyptr());
         roots.insert(root);
     }
 }
@@ -333,11 +344,11 @@ pub unsafe fn data_size(ptr: AnyPtr) -> usize {
         let ty_ty = get_typetag(ty);
         let ty_ty_ty = get_typetag(ty_ty);
         if ty_ty_ty == DATATYPE_T.load() {
-            eprintln!("ty_ty: {:?}", *ty_ty);
+            trace!("ty_ty: {:?}", *ty_ty);
             if ty_ty == METHOD_T.load() {
-                eprintln!("ty: {:?}", *ty.cast::<Method>());
+                trace!("ty: {:?}", *ty.cast::<Method>());
             } else if ty_ty == SVEC_T.load() {
-                eprintln!("ty: SVec {:?}", *ty.cast::<SVec>());
+                trace!("ty: SVec {:?}", *ty.cast::<SVec>());
             }
         }
         debug_assert_eq!(get_typetag(ty), DATATYPE_T.load());
@@ -548,6 +559,21 @@ pub unsafe fn collect_garbage() {
         }
     }
 
+    {
+        let span = tracing::trace_span!("llvm_gc_root_chain");
+        let _guard = span.enter();
+
+        trace!("tracing llvm_gc_root_chain");
+
+        llvm::gc::shadow_stack::visit_roots(GC_ROOT_CHAIN, |root, _meta| {
+            let root = root.cast();
+            trace!("tracing root: {:p}", root);
+            if !trace_ptr(root) {
+                trace_value(*root);
+            }
+        });
+    }
+
     trace!("after roots");
     debug_trace_blocks();
 
@@ -590,6 +616,9 @@ unsafe fn debug_trace_ptr(ptr: AnyPtr) {
 
 #[tracing::instrument]
 pub unsafe fn debug_ptr(ptr: AnyPtr) {
+    if ptr.is_null() {
+        return;
+    }
     let ty = get_typetag(ptr);
     let ty = resolve_moved_out(ty.cast()).cast();
 

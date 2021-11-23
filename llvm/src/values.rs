@@ -1,7 +1,10 @@
+use std::ffi::CString;
+
 use llvm_sys::core;
 use llvm_sys::prelude::*;
 pub use llvm_sys::LLVMLinkage;
 
+use crate::basic_block::BasicBlock;
 use crate::string::LLVMString;
 use crate::types::Type;
 
@@ -49,6 +52,16 @@ impl Value {
             use llvm_sys::analysis::*;
             LLVMVerifyFunction(self.0, LLVMVerifierFailureAction::LLVMPrintMessageAction) == 0
         }
+    }
+    pub fn set_gc(&self, name: &str) {
+        let name = CString::new(name).unwrap();
+        unsafe {
+            core::LLVMSetGC(self.0, name.as_ptr());
+        }
+    }
+    pub fn get_entry_block(&self) -> BasicBlock {
+        assert_eq!(self.kind(), ValueKind::LLVMFunctionValueKind);
+        unsafe { BasicBlock::new(core::LLVMGetEntryBasicBlock(self.0)) }
     }
     pub fn get_param_iter(&self) -> ParamValueIter {
         assert_eq!(self.kind(), ValueKind::LLVMFunctionValueKind);

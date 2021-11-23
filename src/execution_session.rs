@@ -17,6 +17,7 @@ use crate::env::Env;
 use crate::exp;
 use crate::exp::{lower_sexp, Exp};
 use crate::gc;
+use crate::gc::{GcRootChain, GC_ROOT_CHAIN};
 use crate::gc_box;
 use crate::parser::Parser;
 use crate::types::*;
@@ -27,6 +28,14 @@ static STDOUT: Mutex<Box<dyn Write + Sync + Send>> = Mutex::new(Box::new(std::io
 pub fn set_stdout(out: Box<dyn Write + Sync + Send>) {
     let mut stdout = STDOUT.lock().unwrap();
     *stdout = out;
+}
+
+// Another option: libunwind provides this function
+unsafe extern "C" fn _unwind_resume() {
+    panic!("_Unwind_Resume");
+}
+unsafe extern "C" fn __gcc_personality_v0() {
+    panic!("__gcc_personality_v0");
 }
 
 unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
@@ -45,53 +54,94 @@ unsafe fn type_of(x: AnyPtr) -> *const DataType {
     result
 }
 
+#[tracing::instrument]
+unsafe extern "C" fn alpha_f64_mul(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let x: *const AlphaF64 = *args.add(1).cast();
+    let y: *const AlphaF64 = *args.add(2).cast();
+    trace!("alpha_f64_mul({:?}, {:?})", *x, *y);
+    let result = (*x).value * (*y).value;
+    AlphaF64::allocate(result).cast()
+}
+
+#[tracing::instrument]
+unsafe extern "C" fn alpha_i64_mul(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    let x: *const AlphaI64 = *args.add(1).cast();
+    let y: *const AlphaI64 = *args.add(2).cast();
+    trace!("alpha_i64_mul({:?}, {:?})", *x, *y);
+    let result = (*x).value * (*y).value;
+    AlphaI64::allocate(result).cast()
+}
+
+#[tracing::instrument]
 unsafe extern "C" fn alpha_type_of(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let x = *args.add(1);
+    trace!("alpha_type_of({:?})", x);
     type_of(x) as AnyPtr
 }
 
+#[tracing::instrument]
 unsafe extern "C" fn alpha_print_any(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = *args.add(1) as AnyPtr;
+    trace!("alpha_print_any({:?})", x);
     let type_ = type_of(x);
     write!(stdout, "<{}@{:p}>", (*type_).name, x).unwrap();
     VOID.load() as AnyPtr
 }
 
+#[tracing::instrument]
 unsafe extern "C" fn alpha_print_void(_n_args: i64, _args: *const AnyPtr) -> AnyPtr {
+    trace!("alpha_print_void()");
     // print nothing
     VOID.load() as AnyPtr
 }
 
+#[tracing::instrument]
 unsafe extern "C" fn alpha_print_i64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = *(*args.add(1) as *const i64);
+    trace!("alpha_print_i64({:?})", x);
     write!(stdout, "{}", x).unwrap();
     VOID.load() as AnyPtr
 }
 
+#[tracing::instrument]
 unsafe extern "C" fn alpha_print_f64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
-    let x = *(*args.add(1) as *const f64);
-    write!(stdout, "{}", x).unwrap();
+    let x = *(*args.add(1) as *const AlphaF64);
+    trace!("alpha_print_f64({:?})", x);
+    write!(stdout, "{}", x.value).unwrap();
     VOID.load() as AnyPtr
 }
 
+#[tracing::instrument]
 unsafe extern "C" fn alpha_print_string(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = *args.add(1) as *const AlphaString;
+    trace!("alpha_print_string({:?})", x);
+    trace!("x = {:?}", *x);
     write!(stdout, "{}", *x).unwrap();
     VOID.load() as AnyPtr
 }
 
+#[tracing::instrument]
 unsafe extern "C" fn alpha_print_datatype(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
     let mut stdout = STDOUT.lock().unwrap();
     let x = &*(*args.add(1) as *const DataType);
+    trace!("alpha_print_datatype({:?})", x);
     write!(stdout, "{:#?}", x).unwrap();
     VOID.load() as AnyPtr
 }
 
+#[tracing::instrument]
 unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    // trace!("LLVM_GC_ROOT_CHAIN: {:p}", GC_ROOT_CHAIN);
+    // llvm::gc::shadow_stack::visit_roots(GC_ROOT_CHAIN, |ptr, _meta| {
+    //     trace!("LLVM ROOT: {:p}", ptr);
+    //     gc::debug_ptr(ptr.cast());
+    // });
+    // trace!("dispatch from:\n{:?}", backtrace::Backtrace::new());
+
     let args_slice = std::slice::from_raw_parts(args, n_args as usize);
     trace!("dispatch: {:?}", args_slice);
 
@@ -136,7 +186,10 @@ unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
     }
 
     match selected_method {
-        Some(method) => (method.instance)(n_args, args),
+        Some(method) => {
+            trace!("calling found method: {:?}", *method);
+            (method.instance)(n_args, args)
+        }
         None => {
             // let args_cpls = args_slice
             //     .iter()
@@ -150,68 +203,6 @@ unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
         }
     }
 }
-
-// TODO: generating all primitive operations as IR from Rust code might be easier to implement (less
-// duplication).
-const STDLIB_LL: &str = r#"
-  %Any = type opaque
-  %DataType = type opaque
-
-  @f64 = external global %DataType*
-  @i64 = external global %DataType*
-
-  declare %Any* @gc_allocate(i64 %0)
-
-  define %Any* @gc_allocate_with_typetag(i64 %size, %DataType* %type) {
-    %result_any = call %Any* @gc_allocate(i64 8)
-    %result_cells = bitcast %Any* %result_any to %DataType**
-    %typetag = getelementptr %DataType*, %DataType** %result_cells, i64 -1
-    store %DataType* %type, %DataType** %typetag
-    ret %Any* %result_any
-  }
-
-  define %Any* @f64_mul(i64 %n_args, %Any** %args) {
-  entry:
-    %a_ptr = getelementptr %Any*, %Any** %args, i64 1
-    %a = load %Any*, %Any** %a_ptr, align 4
-    %b_ptr = getelementptr %Any*, %Any** %args, i64 2
-    %b = load %Any*, %Any** %b_ptr, align 4
-
-    %f64_t = load %DataType*, %DataType** @f64
-    %result_any = call %Any* @gc_allocate_with_typetag(i64 8, %DataType* %f64_t)
-
-    %a_float_ptr = bitcast %Any* %a to double*
-    %a_value = load double, double* %a_float_ptr
-    %b_float_ptr = bitcast %Any* %b to double*
-    %b_value = load double, double* %b_float_ptr
-
-    %result = fmul double %a_value, %b_value
-    %result_ptr = bitcast %Any* %result_any to double*
-    store double %result, double* %result_ptr
-    ret %Any* %result_any
-  }
-
-  define %Any* @i64_mul(i64 %n_args, %Any** %args) {
-  entry:
-    %a_ptr = getelementptr %Any*, %Any** %args, i64 1
-    %a = load %Any*, %Any** %a_ptr, align 4
-    %b_ptr = getelementptr %Any*, %Any** %args, i64 2
-    %b = load %Any*, %Any** %b_ptr, align 4
-
-    %i64_t = load %DataType*, %DataType** @i64
-    %result_any = call %Any* @gc_allocate_with_typetag(i64 8, %DataType* %i64_t)
-
-    %a_int_ptr = bitcast %Any* %a to i64*
-    %a_value = load i64, i64* %a_int_ptr
-    %b_int_ptr = bitcast %Any* %b to i64*
-    %b_value = load i64, i64* %b_int_ptr
-
-    %result = mul i64 %a_value, %b_value
-    %result_ptr = bitcast %Any* %result_any to i64*
-    store i64 %result, i64* %result_ptr
-    ret %Any* %result_any
-  }
-"#;
 
 #[derive(Debug)]
 pub enum EnvValue {
@@ -296,20 +287,6 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(tracker)
     }
 
-    /// Load IR module using an independent context. This way, the module can (re)define any types
-    /// or functions without clogging the global context.
-    ///
-    /// The side effect of using a new context is that global functions/types defined in the IR
-    /// module are not added to the `self.context` and must be added explicitly.
-    fn load_ir_module(&mut self, name: &str, ir: &str) -> Result<(), Box<dyn Error>> {
-        let tsc = ThreadSafeContext::new();
-        let module = tsc.context().parse_ir_module(name, ir)?;
-        trace!("loading module:\n{}", module);
-        let module = tsc.create_module(module);
-        self.jit.add_module(module)?;
-        Ok(())
-    }
-
     /// Build Alpha standard library.
     ///
     /// This function initializes `self.globals` module and loads LLVM definitions that are required
@@ -321,6 +298,14 @@ impl<'ctx> ExecutionSession<'ctx> {
         let datatype_t = self.context.context().create_named_struct_type("DataType"); // to be defined
         let datatype_ptr_t = datatype_t.pointer_type(AddressSpace::Generic);
 
+        self.jit
+            .define_symbol("_Unwind_Resume", _unwind_resume as usize)?;
+        self.jit
+            .define_symbol("__gcc_personality_v0", __gcc_personality_v0 as usize)?;
+        self.jit.define_symbol("llvm_gc_root_chain", unsafe {
+            &mut GC_ROOT_CHAIN as *mut GcRootChain as usize
+        })?;
+
         self.types.insert(
             symbol("Any"),
             AlphaType {
@@ -329,6 +314,23 @@ impl<'ctx> ExecutionSession<'ctx> {
                 typedef: AlphaTypeDef::Abstract,
             },
         );
+
+        let i64_typedef = AlphaType {
+            name: symbol("i64"),
+            supertype: symbol("Any"),
+            typedef: AlphaTypeDef::Int(64),
+        };
+        self.build_type_specifier(&i64_typedef)?;
+        self.types.insert(symbol("i64"), i64_typedef);
+
+        let f64_typedef = AlphaType {
+            name: symbol("f64"),
+            supertype: symbol("Any"),
+            typedef: AlphaTypeDef::Float(64),
+        };
+        self.build_type_specifier(&f64_typedef)?;
+        self.types.insert(symbol("f64"), f64_typedef);
+
         let void_typedef = AlphaType {
             name: symbol("Void"),
             supertype: symbol("Any"),
@@ -425,26 +427,32 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.global_env
             .insert(symbol("void"), EnvValue::Global("void".to_string()));
 
+        self.globals.add_global("i64", datatype_ptr_t);
+        self.jit
+            .define_symbol("i64", I64_T.as_ref() as *const _ as usize)?;
+        self.global_env
+            .insert(symbol("i64"), EnvValue::Global("i64".to_string()));
+
+        self.globals.add_global("f64", datatype_ptr_t);
+        self.jit
+            .define_symbol("f64", F64_T.as_ref() as *const _ as usize)?;
+        self.global_env
+            .insert(symbol("f64"), EnvValue::Global("f64".to_string()));
+
         // Add a copy of the globals module to jit, so globals with initializers are defined.
         self.load_module(self.globals.clone())?;
 
         // poor man's standard library
         self.eval(
             r#"
-              type Number = abstract
-              type i64: Number = integer(64)
-              type f64: Number = float(64)
+              # type i64: Number = integer(64)
+              # type f64: Number = float(64)
             "#,
         )?;
 
         // DataType type specifier can only be built after i64 and f64 are defined in alpha.
-        let t = self.build_type_specifier(&datatype_typedef)?;
-        trace!("defined type: {}", t);
-
-        let i64_t = unsafe { *self.jit.lookup::<*const *const DataType>("i64")? };
-        let f64_t = unsafe { *self.jit.lookup::<*const *const DataType>("f64")? };
-        gc_box!(i64_t);
-        gc_box!(f64_t);
+        // let t = self.build_type_specifier(&datatype_typedef)?;
+        // trace!("defined type: {}", t);
 
         {
             let type_of_s = symbol("type_of");
@@ -464,54 +472,34 @@ impl<'ctx> ExecutionSession<'ctx> {
             self.function_add_method(type_of_f.load(), m.load());
         }
 
-        // stdlib.ll defines primitive operations
-        self.load_ir_module("stdlib.ll", STDLIB_LL)?;
         {
             let f64_mul_s = symbol("f64_mul");
             let f64_mul_f = self.define_function(f64_mul_s)?;
             gc_box!(f64_mul_f);
-            trace!("f64_mul_f: {:?}", f64_mul_f.load());
-            unsafe {
-                gc::debug_ptr(f64_mul_f.load().cast());
-            }
             let signature = unsafe {
                 SVec::new(&[
                     ANY_T.load() as AnyPtr,
-                    f64_t.load() as AnyPtr,
-                    f64_t.load() as AnyPtr,
+                    F64_T.load() as AnyPtr,
+                    F64_T.load() as AnyPtr,
                 ])
             };
-            let m = unsafe { Method::new(signature, self.jit.lookup::<GenericFn>("f64_mul")?) };
-            gc_box!(m);
-            trace!("f64_mul_f after allocations: {:?}", f64_mul_f.load());
-            unsafe {
-                gc::debug_ptr(f64_mul_f.load().cast());
-            }
-            self.function_add_method(f64_mul_f.load(), m.load());
+            let m = unsafe { Method::new(signature, alpha_f64_mul) };
+            self.function_add_method(f64_mul_f.load(), m);
         }
 
         {
             let i64_mul_s = symbol("i64_mul");
             let i64_mul_f = self.define_function(i64_mul_s)?;
             gc_box!(i64_mul_f);
-            trace!("i64_mul_f: {:?}", i64_mul_f.load());
-            unsafe {
-                gc::debug_ptr(i64_mul_f.load().cast());
-            }
             let signature = unsafe {
                 SVec::new(&[
                     ANY_T.load() as AnyPtr,
-                    i64_t.load() as AnyPtr,
-                    i64_t.load() as AnyPtr,
+                    I64_T.load() as AnyPtr,
+                    I64_T.load() as AnyPtr,
                 ])
             };
-            let m = unsafe { Method::new(signature, self.jit.lookup::<GenericFn>("i64_mul")?) };
-            gc_box!(m);
-            trace!("i64_mul_f after allocations: {:?}", i64_mul_f.load());
-            unsafe {
-                gc::debug_ptr(i64_mul_f.load().cast());
-            }
-            self.function_add_method(i64_mul_f.load(), m.load());
+            let m = unsafe { Method::new(signature, alpha_i64_mul) };
+            self.function_add_method(i64_mul_f.load(), m);
         }
 
         let print_s = symbol("print");
@@ -531,13 +519,13 @@ impl<'ctx> ExecutionSession<'ctx> {
             self.function_add_method(print_f.load(), m.load());
         }
         {
-            let signature = unsafe { SVec::new(&[ANY_T.load() as AnyPtr, i64_t.load() as AnyPtr]) };
+            let signature = unsafe { SVec::new(&[ANY_T.load() as AnyPtr, I64_T.load() as AnyPtr]) };
             let m = unsafe { Method::new(signature, alpha_print_i64) };
             gc_box!(m);
             self.function_add_method(print_f.load(), m.load());
         }
         {
-            let signature = unsafe { SVec::new(&[ANY_T.load() as AnyPtr, f64_t.load() as AnyPtr]) };
+            let signature = unsafe { SVec::new(&[ANY_T.load() as AnyPtr, F64_T.load() as AnyPtr]) };
             let m = unsafe { Method::new(signature, alpha_print_f64) };
             self.function_add_method(print_f.load(), m);
         }
@@ -747,6 +735,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let module = self.new_module("constructor");
         let constructor =
             Compiler::compile_constructor(self.context.context(), &module, &self.global_env, def)?;
+        Self::optimize_function(&module, constructor);
         let name = constructor.get_name();
         self.load_module(module)?;
 
@@ -800,6 +789,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                 i,
                 &f_name,
             )?;
+            Self::optimize_function(&module, accessor);
             let instance_name = accessor.get_name();
             self.load_module(module)?;
 
@@ -831,6 +821,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         // compile method
         let module = self.new_module(&method_name);
         let instance = Compiler::compile(self.context.context(), &module, &self.global_env, &def)?;
+        Self::optimize_function(&module, instance);
         let instance_fn_name = instance.get_name();
         self.load_module(module)?;
         let instance = self.jit.lookup::<GenericFn>(instance_fn_name)?;
@@ -930,10 +921,6 @@ impl<'ctx> ExecutionSession<'ctx> {
         debug_assert!(!method.is_null());
         unsafe {
             let fn_t = type_of(fn_obj) as *mut DataType;
-            trace!("function_add_method()");
-            gc::debug_ptr(fn_obj);
-            gc::debug_ptr(fn_t.cast());
-            gc::debug_ptr(method.cast());
             DataType::add_method(fn_t, method);
         }
     }
@@ -954,6 +941,8 @@ impl<'ctx> ExecutionSession<'ctx> {
         let module = self.new_module("user");
 
         let f = Compiler::compile(self.context.context(), &module, &self.global_env, &def)?;
+
+        Self::optimize_function(&module, f);
 
         let name = f.get_name();
 
@@ -1012,5 +1001,16 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn unique_name(&mut self, symbol: Symbol) -> String {
         let i = self.next_counter();
         format!("{}.{}_", symbol.as_str(), i)
+    }
+
+    fn optimize_function(module: &Module, f: Value) {
+        // use llvm::pass_manager::*;
+        // let mut fpm = FunctionPassManager::new_for_module(module);
+        // fpm.add_instruction_combining_pass();
+        // fpm.add_cfg_simplification_pass();
+        // fpm.run(f);
+
+        // let pm = ModulePassManager::new();
+        // pm.run(module);
     }
 }
