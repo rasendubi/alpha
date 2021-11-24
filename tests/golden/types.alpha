@@ -1,0 +1,29 @@
+type X = { x }
+
+# empty constructor
+type Empty = {}
+{
+  Empty()
+  void
+}
+
+# constructor with argument
+type Box = { value }
+Box(12).value
+
+# accessors
+type Pair = { x, y }
+Pair(2, 3).x
+Pair(2, 3).y
+
+# inlined fields
+type PairF64 = { x: f64, y: f64 }
+PairF64(2.2, 3.3).x
+PairF64(2.2, 3.3).y
+
+# expected stdout:
+# 12
+# 2
+# 3
+# 2.2
+# 3.3

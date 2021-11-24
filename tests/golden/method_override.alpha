@@ -1,0 +1,12 @@
+type X = {}
+
+fn x(_: X) = 1
+fn x(_: X) = 2
+
+x(X())
+
+# expected stderr:
+# warning: re-defining method
+
+# expected stdout:
+# 2

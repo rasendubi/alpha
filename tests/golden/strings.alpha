@@ -1,0 +1,7 @@
+"hello, world!"
+
+print("hi, there!")
+
+# expected stdout:
+# hello, world!
+# hi, there!

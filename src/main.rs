@@ -1,9 +1,12 @@
+use std::error::Error;
+
 use alpha::ExecutionSession;
 
+use clap::Parser;
 use rustyline::validate::{
     MatchingBracketValidator, ValidationContext, ValidationResult, Validator,
 };
-use rustyline::{Editor, Result};
+use rustyline::{Editor, Result as RustylineResult};
 use rustyline_derive::{Completer, Helper, Highlighter, Hinter};
 
 #[derive(Completer, Helper, Highlighter, Hinter)]
@@ -12,14 +15,22 @@ struct InputValidator {
 }
 
 impl Validator for InputValidator {
-    fn validate(&self, ctx: &mut ValidationContext) -> Result<ValidationResult> {
+    fn validate(&self, ctx: &mut ValidationContext) -> RustylineResult<ValidationResult> {
         self.brackets.validate(ctx)
     }
 }
 
 const HISTORY_FILE: &str = "history.txt";
 
-fn main() {
+#[derive(Parser)]
+#[clap(version = "0.1")]
+struct Opts {
+    file: Option<String>,
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let opts = Opts::parse();
+
     tracing_subscriber::fmt()
         .without_time()
         .with_target(false)
@@ -30,14 +41,20 @@ fn main() {
         .init();
     alpha::init();
 
+    let mut es = ExecutionSession::new();
+
+    if let Some(file) = opts.file {
+        let input = std::fs::read_to_string(file)?;
+        es.eval(&input)?;
+        return Ok(());
+    }
+
     let h = InputValidator {
         brackets: MatchingBracketValidator::new(),
     };
     let mut rl = Editor::<InputValidator>::new();
     rl.set_helper(Some(h));
     let _ = rl.load_history(HISTORY_FILE);
-
-    let mut es = ExecutionSession::new();
 
     loop {
         match rl.readline("user> ") {
@@ -51,4 +68,6 @@ fn main() {
         }
     }
     rl.save_history(HISTORY_FILE).unwrap();
+
+    Ok(())
 }

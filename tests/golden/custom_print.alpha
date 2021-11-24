@@ -1,0 +1,14 @@
+type Point = { x, y }
+
+fn print(p: Point) = {
+  print("{ x = ")
+  print(p.x)
+  print(", y = ")
+  print(p.y)
+  print(" }")
+}
+
+Point(2, 12)
+
+# expected stdout:
+# { x = 2, y = 12 }
