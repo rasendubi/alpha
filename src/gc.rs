@@ -1,272 +1,33 @@
+pub mod roots;
+pub use self::roots::{
+    add_global_root, remove_global_root, with_gc_box_slice, Gc, GcRoot, GcRootChain, GC_ROOT_CHAIN,
+};
+
 use std::alloc;
 use std::collections::HashSet;
-use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
-use std::sync::Once;
 
 use pretty_hex::{HexConfig, PrettyHex};
-use tracing::{debug, trace};
+use tracing::{info, trace};
 
 use crate::types::*;
 
-pub use llvm::gc::shadow_stack::{pop_gcframe, push_gcframe, FrameMap, GcRootChain, StackEntry};
+static mut TO: Block = Block::empty();
+static mut FROM: Block = Block::empty();
 
-// TODO: this has to be thread-local when Alpha supports multi-threading.
-pub static mut GC_ROOT_CHAIN: GcRootChain = std::ptr::null_mut();
-
-static mut GC_GLOBAL_ROOTS: MaybeUninit<Mutex<HashSet<GcRoot<'static, u8>>>> =
-    MaybeUninit::uninit();
-fn gc_init() {
-    static GC_INIT: Once = Once::new();
-    GC_INIT.call_once(|| unsafe {
-        GC_GLOBAL_ROOTS.write(Mutex::new(HashSet::new()));
-    })
-}
-#[tracing::instrument]
-pub unsafe fn add_global_root(root: GcRoot<'static, u8>) {
-    gc_init();
-    let mut roots = GC_GLOBAL_ROOTS.assume_init_ref().lock().unwrap();
-    trace!(
-        "adding root: {:?} -> {:?}",
-        root.as_anyptr(),
-        *root.as_anyptr()
-    );
-    debug_ptr(*root.as_anyptr());
-    roots.insert(root);
-}
-
-pub unsafe fn remove_global_root(root: &GcRoot<'static, u8>) {
-    let mut roots = GC_GLOBAL_ROOTS.assume_init_ref().lock().unwrap();
-    trace!("removing root: {:?}", root.as_anyptr(),);
-    let removed = roots.remove(root);
-    debug_assert!(removed);
-}
-
-static mut TO: Block = Block {
-    start: std::ptr::null_mut(),
-    cur: AtomicPtr::new(std::ptr::null_mut()),
-    end: std::ptr::null_mut(),
-    allocation: MaybeUninit::uninit(),
-};
-static mut FROM: Block = Block {
-    start: std::ptr::null_mut(),
-    cur: AtomicPtr::new(std::ptr::null_mut()),
-    end: std::ptr::null_mut(),
-    allocation: MaybeUninit::uninit(),
-};
-
-const GC_THRESHOLD: isize = 256;
-
-#[macro_export]
-macro_rules! gc_global {
-    ( $vis:vis $i:ident : $t:ty ) => {
-        paste::paste! {
-            static mut [<$i _GC>]: $crate::gc::Gc<$t> = $crate::gc::Gc::null();
-            $vis static $i: $crate::gc::GcRoot<'static, $t> = $crate::gc::GcRoot::new(unsafe {&[<$i _GC>]});
-            #[::ctor::ctor]
-            fn [<$i:lower _register>]() {
-                unsafe {
-                    $crate::gc::add_global_root((&$i).cast().clone());
-                }
-            }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! gc_box {
-    ( $i:ident ) => {
-        let $i = $crate::gc::Gc::new($i);
-        $crate::gc_frame![$i];
-    };
-}
-
-#[macro_export]
-macro_rules! count {
-    () => (0usize);
-    ( $x:tt $($xs:tt)* ) => (1usize + $crate::count!($($xs)*));
-}
-
-pub unsafe fn gcroot_of_type<T>(ptr: &*const u8, _to: Gc<T>) -> GcRoot<T> {
-    GcRoot::from_ptr_ref(ptr as *const *const u8 as *const *const T)
-}
-
-#[macro_export]
-macro_rules! gc_frame {
-    ( $( $i:ident ),* ) => {
-        // Ideally, should be static.
-        let frame_map: ::llvm::gc::shadow_stack::FrameMap<0> = ::llvm::gc::shadow_stack::FrameMap::new($crate::count!( $($i)* ) as u32, []);
-        #[allow(unused_unsafe)]
-        let stack_entry = unsafe {::llvm::gc::shadow_stack::StackEntry::new($crate::gc::GC_ROOT_CHAIN, &frame_map, [
-            $( $i.cast().ptr() ),*
-        ])};
-        #[allow(unused_unsafe)]
-        let _stack_entry_registration = unsafe{$crate::gc::GcFrameRegistration::new(&stack_entry)};
-        $crate::gc_frame!(@ stack_entry, 0, $($i)*)
-    };
-    ( @ $stack_entry:ident, $n:expr, $i:ident $($is:ident)* ) => {
-        #[allow(unused_unsafe)]
-        let $i = unsafe {$crate::gc::gcroot_of_type(&($stack_entry).roots[$n], $i)};
-        $crate::gc_frame!(@ $stack_entry, ($n + 1), $($is)*)
-    };
-    ( @ $stack_entry:ident, $n:expr, ) => {
-    };
-}
-
-pub fn with_gc_box_slice<T, R, F: FnOnce(&[Gc<T>]) -> R>(elements: &[*const T], f: F) -> R {
-    let frame_map = FrameMap::new(elements.len() as u32, []);
-    alloca::with_alloca(
-        std::mem::size_of::<StackEntry<0>>() + std::mem::size_of::<*const T>() * elements.len(),
-        |mem| unsafe {
-            let ptr = mem.as_mut_ptr().cast::<StackEntry<0>>();
-            *ptr = StackEntry::new(GC_ROOT_CHAIN, &frame_map, []);
-            let elements_ptr = ptr.add(1).cast::<*const T>();
-            let new_elements = std::slice::from_raw_parts_mut(elements_ptr, elements.len());
-            new_elements.copy_from_slice(elements);
-            let _registration = GcFrameRegistration::new::<0>(&*ptr);
-            f(std::slice::from_raw_parts(
-                elements_ptr.cast::<Gc<T>>(),
-                elements.len(),
-            ))
-        },
-    )
-}
-
-/// A pointer to GC-managed value.
-///
-/// Must be rooted at safepoints.
-#[derive(Debug, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct Gc<T>(*const T);
-
-impl<T> Gc<T> {
-    pub const fn new(ptr: *const T) -> Self {
-        Self(ptr)
-    }
-
-    pub const fn null() -> Self {
-        Self(std::ptr::null_mut())
-    }
-
-    pub fn ptr(&self) -> *const T {
-        self.0
-    }
-
-    pub fn set_ptr(&mut self, ptr: *const T) {
-        self.0 = ptr;
-    }
-
-    pub fn cast<T2>(&self) -> &Gc<T2> {
-        unsafe { std::mem::transmute_copy::<&Self, &Gc<T2>>(&self) }
-    }
-
-    pub fn cast_mut<T2>(&mut self) -> &mut Gc<T2> {
-        unsafe { std::mem::transmute_copy::<&mut Self, &mut Gc<T2>>(&self) }
-    }
-}
+#[cfg_attr(feature = "gc_debug", allow(dead_code))]
+const GC_THRESHOLD: usize = 256;
 
 #[derive(Debug)]
-pub struct GcFrameRegistration<'a> {
-    frame: *mut StackEntry<0>,
-    _phantom: PhantomData<&'a StackEntry<0>>,
-}
-impl<'a> GcFrameRegistration<'a> {
-    pub fn new<const N: usize>(frame: &'a StackEntry<N>) -> Self {
-        let frame = StackEntry::as_unsized(frame) as *mut StackEntry<0>;
-        unsafe {
-            push_gcframe(&mut GC_ROOT_CHAIN, frame);
-        }
-        Self {
-            frame,
-            _phantom: PhantomData,
-        }
-    }
-}
-impl<'a> Drop for GcFrameRegistration<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            pop_gcframe(&mut GC_ROOT_CHAIN, self.frame);
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 #[repr(C)]
-pub struct GcRoot<'a, T> {
-    ptr: *mut Gc<T>,
-    _phantom: PhantomData<&'a Gc<T>>,
+struct Typetag {
+    ty: *const DataType,
 }
+const TYPETAG_SIZE: usize = std::mem::size_of::<Typetag>();
 
-unsafe impl<'a, T> Sync for GcRoot<'a, T> {}
-
-impl<'a, T> GcRoot<'a, T> {
-    pub const fn new(ptr: &'a Gc<T>) -> Self {
-        // trace!("New gc root at: {:p}", b);
-        GcRoot {
-            ptr: ptr as *const Gc<T> as *mut Gc<T>,
-            _phantom: PhantomData,
-        }
-    }
-
-    pub const fn from_ptr_ref(ptr: *const *const T) -> Self {
-        Self {
-            ptr: (ptr as *const *const T) as *mut Gc<T>,
-            _phantom: PhantomData,
-        }
-    }
-
-    // TODO: deprecate
-    // #[deprecated]
-    pub fn load(&self) -> *const T {
-        self.ptr()
-    }
-
-    pub fn load_mut(&self) -> *mut T {
-        unsafe { (*self.ptr).0 as *mut T }
-    }
-
-    // TODO:
-    // pub fn store(&self, ptr: Gc<T>) {
-    pub fn store(&self, ptr: *const T) {
-        unsafe {
-            (*self.ptr).0 = ptr;
-        }
-    }
-
-    pub fn as_ref(&self) -> &*const T {
-        unsafe { &(*self.ptr).0 }
-    }
-
-    pub fn ptr(&self) -> *const T {
-        unsafe { (*self.ptr).ptr() }
-    }
-
-    pub fn cast<T2>(&self) -> &GcRoot<T2> {
-        unsafe { std::mem::transmute_copy::<&Self, &GcRoot<T2>>(&self) }
-    }
-
-    pub fn cast_mut<T2>(&mut self) -> &mut GcRoot<T2> {
-        unsafe { std::mem::transmute_copy::<&mut Self, &mut GcRoot<T2>>(&self) }
-    }
-
-    // pub unsafe fn from_ptr_unchecked<T>(ptr: *mut *mut T) -> Self {
-    //     GcRoot {
-    //         ptr: ptr.cast::<AtomicPtr<()>>(),
-    //     }
-    // }
-
-    fn as_anyptr(&self) -> *mut AnyPtrMut {
-        self.ptr.cast()
-    }
-
-    // fn as_anyptr(&self) -> *mut AnyPtrMut {
-    //     (self.ptr as *mut AtomicPtr<()>).cast()
-    //     // unsafe { std::mem::transmute::<_, *mut AnyPtrMut>(self.ptr as *const AtomicPtr<()>) }
-    // }
-}
-
+/// `Block` is a thread-safe bump allocator.
 struct Block {
     start: *mut u8,
     end: *mut u8,
@@ -274,9 +35,35 @@ struct Block {
     allocation: MaybeUninit<region::Allocation>,
 }
 
+impl std::fmt::Debug for Block {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        let hex_conf = HexConfig {
+            ascii: false,
+            width: 32,
+            group: 8,
+            ..HexConfig::default()
+        };
+        write!(
+            f,
+            "Block@{:p} {:?}",
+            self.start,
+            self.as_slice().hex_conf(hex_conf)
+        )
+    }
+}
+
 unsafe impl Sync for Block {}
 
 impl Block {
+    const fn empty() -> Block {
+        Block {
+            start: std::ptr::null_mut(),
+            cur: AtomicPtr::new(std::ptr::null_mut()),
+            end: std::ptr::null_mut(),
+            allocation: MaybeUninit::uninit(),
+        }
+    }
+
     fn new() -> Block {
         let page_size = region::page::size();
         let mut allocation = region::alloc(page_size, region::Protection::READ_WRITE).unwrap();
@@ -289,6 +76,7 @@ impl Block {
         }
     }
 
+    /// Make memory block non-readable.
     unsafe fn protect(&self) {
         if !self.start.is_null() {
             region::protect(
@@ -313,6 +101,14 @@ impl Block {
             });
         res.ok()
     }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.start, self.allocated_size()) }
+    }
+
+    fn allocated_size(&self) -> usize {
+        unsafe { self.cur.load(Ordering::Relaxed).offset_from(self.start) as usize }
+    }
 }
 impl Drop for Block {
     fn drop(&mut self) {
@@ -324,19 +120,21 @@ impl Drop for Block {
     }
 }
 
+fn align_to(size: usize, alignment: usize) -> usize {
+    (size + alignment - 1) / alignment * alignment
+}
 fn align_size(size: usize) -> usize {
     const ALIGNMENT: usize = 8;
-    (size + ALIGNMENT - 1) / ALIGNMENT * ALIGNMENT
+    align_to(size, ALIGNMENT)
 }
 
 #[tracing::instrument]
 pub unsafe fn allocate(size: usize) -> *mut u8 {
     maybe_collect_garbage();
-    // TODO: handle alignment
     let size = align_size(size);
-    let start = TO.bump(size + 8 /* typetag */);
+    let start = TO.bump(TYPETAG_SIZE + size);
     let start = start.unwrap_or_else(|| panic!("gc: out of memory"));
-    let result = start.add(8 /* typetag */);
+    let result = start.add(TYPETAG_SIZE);
     trace!("allocting from:\n{:?}", backtrace::Backtrace::new());
     trace!("allocate({}) = {:#?}", size, result);
     result
@@ -344,58 +142,29 @@ pub unsafe fn allocate(size: usize) -> *mut u8 {
 
 /// Allocate permanent memory block. It is guaranteed to never be freed up by garbage collector.
 pub unsafe fn allocate_perm(size: usize) -> *mut u8 {
-    let start = alloc::alloc(alloc::Layout::from_size_align_unchecked(size + 8, 16));
-    std::slice::from_raw_parts_mut(start, size + 8).fill(0);
-    start.add(8 /* typetag */)
+    let start = alloc::alloc(alloc::Layout::from_size_align_unchecked(
+        TYPETAG_SIZE + size,
+        16,
+    ));
+    std::slice::from_raw_parts_mut(start, TYPETAG_SIZE + size).fill(0);
+    start.add(TYPETAG_SIZE)
 }
 
 pub unsafe fn maybe_collect_garbage() {
+    // When gc_debug is enabled, collect garbage as often as possible to detect unrooted pointers.
     #[cfg(feature = "gc_debug")]
     collect_garbage();
 
     #[cfg(not(feature = "gc_debug"))]
-    if TO.end.offset_from(TO.cur.load(Ordering::SeqCst)) < GC_THRESHOLD {
+    if TO.end.offset_from(TO.cur.load(Ordering::SeqCst)) < (GC_THRESHOLD as isize) {
         collect_garbage();
     }
 }
 
 #[tracing::instrument]
 pub unsafe fn data_size(ptr: AnyPtr) -> usize {
-    let ty = get_typetag(ptr);
-    debug_assert_eq!((ty as usize) & 0x1, 0x0); // value should not be moved out
-    let ty = resolve_moved_out(ty as AnyPtr) as *const DataType; // type can be though
-    let size = if ty == STRING_T.load() {
-        AlphaString::size(&*(ptr as *const AlphaString))
-    } else if ty == SYMBOL_T.load() {
-        SymbolNode::size(&*(ptr as *const SymbolNode))
-    } else if ty == SVEC_T.load() {
-        SVec::size(&*(ptr as *const SVec))
-    } else if ty == METHOD_T.load() {
-        Method::size(&*(ptr as *const Method))
-    } else {
-        // regular datatype
-        let ty_ty = get_typetag(ty);
-        let ty_ty_ty = get_typetag(ty_ty);
-        if ty_ty_ty == DATATYPE_T.load() {
-            trace!("ty_ty: {:?}", *ty_ty);
-            if ty_ty == METHOD_T.load() {
-                trace!("ty: {:?}", *ty.cast::<Method>());
-            } else if ty_ty == SVEC_T.load() {
-                trace!("ty: SVec {:?}", *ty.cast::<SVec>());
-            }
-        }
-        debug_assert_eq!(get_typetag(ty), DATATYPE_T.load());
-        (*ty).size
-    };
+    let size = (*ptr).size();
     let size = align_size(size);
-
-    trace!(
-        "size={} (ty={:p}, type_of(ty)={:p})",
-        size,
-        ty,
-        get_typetag(ty),
-    );
-
     size
 }
 
@@ -416,68 +185,24 @@ pub unsafe fn resolve_moved_out(p: AnyPtr) -> AnyPtr {
 
 #[tracing::instrument]
 pub unsafe fn collect_garbage() {
-    let hex_conf = HexConfig {
-        ascii: false,
-        width: 32,
-        group: 8,
-        // chunk: 1,
-        ..HexConfig::default()
-    };
-    let block_to_slice = |block: &Block| {
-        std::slice::from_raw_parts(
-            block.start as *const u8,
-            block.cur.load(Ordering::Relaxed).offset_from(block.start) as usize,
-        )
-    };
-
-    debug!("collecting garbage");
-    trace!(
-        "  from@{:p}: {:x?}",
-        TO.start,
-        block_to_slice(&TO).hex_conf(hex_conf)
-    );
-
-    // let from = &mut TO;
-    // let to = Block::new();
     FROM = std::mem::replace(&mut TO, Block::new());
-    let debug_trace_blocks = || {
-        trace!(
-            "  from@{:p}:\n{:x?}",
-            FROM.start,
-            block_to_slice(&FROM).hex_conf(hex_conf)
-        );
-        trace!(
-            "  to  @{:p}:\n{:x?}",
-            TO.start,
-            block_to_slice(&TO).hex_conf(hex_conf)
-        );
-    };
+    trace!("collecting garbage from: {:?}", FROM);
 
-    // trace_gcroots();
-
-    {
-        let span = tracing::trace_span!("trace_globals");
-        let _guard = span.enter();
-
-        let globals = GC_GLOBAL_ROOTS.assume_init_ref().lock().unwrap();
-        for root in globals.iter() {
-            // TODO: global roots are mostly perm-alloced. Trace values instead?
-            if !trace_ptr(root.as_anyptr()) {
-                trace_value(*root.as_anyptr());
-            }
+    #[inline]
+    fn debug_trace_blocks() {
+        unsafe {
+            trace!("  from: {:?}", FROM);
+            trace!("  to:   {:?}", TO);
         }
     }
 
-    trace!("after globals");
-    debug_trace_blocks();
-
     {
-        let span = tracing::trace_span!("llvm_gc_root_chain");
+        let span = tracing::trace_span!("tracing_roots");
         let _guard = span.enter();
 
-        trace!("tracing llvm_gc_root_chain");
+        trace!("tracing roots");
 
-        llvm::gc::shadow_stack::visit_roots(GC_ROOT_CHAIN, |root, _meta| {
+        roots::visit_roots(|root, _meta| {
             let root = root.cast();
             trace!("tracing root: {:p}", root);
             if !trace_ptr(root) {
@@ -505,6 +230,12 @@ pub unsafe fn collect_garbage() {
 
     trace!("after traverse");
     debug_trace_blocks();
+
+    let before = FROM.allocated_size();
+    let after = TO.allocated_size();
+    let collected = before - after;
+    info!(before, after, collected);
+
     FROM.protect();
 }
 
@@ -574,38 +305,6 @@ unsafe fn trace_value(ptr: *mut AlphaValue) {
     }
 
     (*ptr).trace_pointers(trace_ptr);
-
-    // let ty = get_typetag(ptr);
-    // trace!("tracing: {:p} (ty={:p})", ptr, ty);
-    // if ty == SYMBOL_T.load() {
-    //     // trace!("tracing as symbol");
-    //     // SymbolNode::trace_pointers(ptr as _, trace_ptr);
-
-    //     // Symbols are always perm-allocated and do not need to be traced.
-    // } else if ty == SVEC_T.load() {
-    //     trace!("tracing as svec");
-    //     SVec::trace_pointers(ptr as _, trace_ptr);
-    // } else {
-    //     // trace generic DataType
-    //     let ptr_offsets = (*ty).pointers();
-    //     if ((*ty).name.node as *const _ as *const u8).is_null() {
-    //         trace!(
-    //             "tracing as generic DataType {:?}, ptrs={:?}",
-    //             std::slice::from_raw_parts(ty as *const u8, (*ty).size()).hex_conf(HexConfig {
-    //                 title: false,
-    //                 width: 0,
-    //                 ..hex_conf
-    //             }),
-    //             ptr_offsets
-    //         );
-    //     } else {
-    //         trace!("tracing as generic {:?}, ptrs={:?}", *ty, ptr_offsets);
-    //     }
-    //     for offset in ptr_offsets {
-    //         let field = ptr.cast::<u8>().add(*offset).cast::<AnyPtrMut>();
-    //         trace_ptr(field);
-    //     }
-    // }
 }
 
 #[cfg(feature = "gc_debug")]
@@ -663,15 +362,15 @@ pub unsafe fn debug_ptr(ptr: AnyPtr) {
             // datatype is not completely initialized
             return;
         }
-        trace!(target: "alpha::gc::debug_value", "{:?}", *ptr);
-    } else {
-        trace!(target: "alpha::gc::debug_value", "{:?}", *ptr);
     }
+
+    trace!(target: "alpha::gc::debug_value", "{:?}", *ptr);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gc_box;
     use serial_test::serial;
 
     #[test]

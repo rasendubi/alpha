@@ -227,7 +227,7 @@ pub struct ExecutionSession<'ctx> {
     globals: Module,
     /// These need to be removed from global roots when ExecutionSession is destroyed. Otherwise, GC
     /// will try to scavenge them and will segfault.
-    global_gc_roots: HashSet<GcRoot<'static, u8>>,
+    global_gc_roots: HashSet<GcRoot<'static, AlphaValue>>,
     jit: LLJIT,
     global_env: Env<'ctx, EnvValue>,
     types: Env<'ctx, TypeDef>,
@@ -647,7 +647,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         self.load_module(module)?;
 
-        let type_ptr_place = self.jit.lookup::<*mut *const u8>(name.as_str())?;
+        let type_ptr_place = self.jit.lookup::<*mut AnyPtr>(name.as_str())?;
         unsafe {
             self.register_gc_root(type_ptr_place);
         }
@@ -896,7 +896,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         // allocate function object
         let fn_obj = unsafe {
-            let fn_obj = gc_allocate(0);
+            let fn_obj = gc_allocate(0) as AnyPtrMut;
             set_typetag(fn_obj, fn_t.load());
             fn_obj
         };
@@ -921,7 +921,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_module(module)?;
 
         unsafe {
-            let fn_place = self.jit.lookup::<*mut *const u8>(f_global_name)?;
+            let fn_place = self.jit.lookup::<*mut AnyPtr>(f_global_name)?;
             self.register_gc_root(fn_place);
         }
 
@@ -1026,7 +1026,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         // pm.run(module);
     }
 
-    unsafe fn register_gc_root(&mut self, ptr: *const *const u8) {
+    unsafe fn register_gc_root(&mut self, ptr: *const AnyPtr) {
         let root = GcRoot::from_ptr_ref(ptr);
         self.global_gc_roots.insert(root.clone());
         gc::add_global_root(root);

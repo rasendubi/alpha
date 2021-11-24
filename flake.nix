@@ -18,6 +18,8 @@
           pkgs.libffi
           pkgs.libxml2
         ];
+
+        RUST_LOG = "alpha::execution_session,alpha::gc[collect_garbage]=INFO";
       };
   };
 }

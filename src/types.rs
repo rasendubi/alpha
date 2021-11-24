@@ -1,3 +1,5 @@
+//! Runtime type information.
+mod alpha_value;
 mod any;
 mod datatype;
 mod init;
@@ -9,6 +11,7 @@ mod symbol;
 mod r#type;
 mod void;
 
+pub use self::alpha_value::*;
 pub use self::any::*;
 pub use self::datatype::*;
 pub use self::init::*;
@@ -25,132 +28,6 @@ use crate::gc;
 pub type AnyPtr = *const AlphaValue;
 pub type AnyPtrMut = *mut AlphaValue;
 pub type GenericFn = unsafe extern "C" fn(i64, *const AnyPtr) -> AnyPtr;
-
-/// AlphaValue is a typedef for values stored on GC-heap. It must be used via pointers or
-/// `Gc<AlphaValue>`.
-///
-/// The type provides some helpers to handle the value based on its typetag.
-pub struct AlphaValue;
-
-impl AlphaValue {
-    pub unsafe fn get_typetag(&self) -> *const DataType {
-        get_typetag(self)
-    }
-
-    pub fn as_data_type(&self) -> &dyn AlphaDataType {
-        self.as_maybe_datatype().unwrap_or(self)
-    }
-
-    fn as_maybe_datatype(&self) -> Option<&dyn AlphaDataType> {
-        unsafe {
-            let tag = self.get_typetag();
-            let data: &dyn AlphaDataType = if tag == DataType::typetag() {
-                &*(self as *const Self as *const DataType)
-            } else if tag == Method::typetag() {
-                &*(self as *const Self as *const Method)
-            } else if tag == Type::typetag() {
-                &*(self as *const Self as *const Type)
-            } else if tag == AlphaString::typetag() {
-                &*(self as *const Self as *const AlphaString)
-            } else if tag == SVec::typetag() {
-                &*(self as *const Self as *const SVec)
-            } else if tag == SymbolNode::typetag() {
-                &*(self as *const Self as *const SymbolNode)
-            } else if tag == Void::typetag() {
-                &*(self as *const Self as *const Void)
-            } else {
-                return None;
-            };
-            Some(data)
-        }
-    }
-
-    fn as_maybe_datatype_mut(&mut self) -> Option<&mut dyn AlphaDataType> {
-        unsafe {
-            let tag = self.get_typetag();
-            let data: &mut dyn AlphaDataType = if tag == DataType::typetag() {
-                &mut *(self as *mut Self as *mut DataType)
-            } else if tag == Method::typetag() {
-                &mut *(self as *mut Self as *mut Method)
-            } else if tag == Type::typetag() {
-                &mut *(self as *mut Self as *mut Type)
-            } else if tag == AlphaString::typetag() {
-                &mut *(self as *mut Self as *mut AlphaString)
-            } else if tag == SVec::typetag() {
-                &mut *(self as *mut Self as *mut SVec)
-            } else if tag == SymbolNode::typetag() {
-                &mut *(self as *mut Self as *mut SymbolNode)
-            } else if tag == Void::typetag() {
-                &mut *(self as *mut Self as *mut Void)
-            } else {
-                return None;
-            };
-            Some(data)
-        }
-    }
-}
-
-impl AlphaDataType for AlphaValue {
-    fn size(&self) -> usize
-    where
-        Self: Sized,
-    {
-        self.as_maybe_datatype().map_or_else(
-            || unsafe {
-                // generic datatype
-                let typetag = self.get_typetag();
-                (*typetag).size
-            },
-            |datatype| datatype.size(),
-        )
-    }
-
-    fn trace_pointers(&mut self, trace_ptr: unsafe fn(*mut AnyPtrMut) -> bool) {
-        unsafe {
-            if let Some(datatype) = self.as_maybe_datatype_mut() {
-                datatype.trace_pointers(trace_ptr);
-                return;
-            }
-
-            // trace as generic datatype
-            let ptr = self as *mut Self;
-            let ty = get_typetag(ptr); // self datatype
-            let ptr_offsets = (*ty).pointers();
-            for offset in ptr_offsets {
-                let field = (ptr as *mut u8).add(*offset) as *mut AnyPtrMut;
-                trace_ptr(field);
-            }
-        }
-    }
-}
-
-impl std::fmt::Debug for AlphaValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        use pretty_hex::{HexConfig, PrettyHex};
-
-        if let Some(datatype) = self.as_maybe_datatype() {
-            datatype.fmt(f)
-        } else {
-            unsafe {
-                let tag = self.get_typetag();
-                let ptr = self as *const Self as *const u8;
-                f.debug_struct("AlphaValue")
-                    .field("type", &(*tag))
-                    .field(
-                        "data",
-                        &std::slice::from_raw_parts(ptr, (*tag).size).hex_conf(HexConfig {
-                            title: false,
-                            ascii: false,
-                            width: 0,
-                            group: 8,
-                            ..HexConfig::default()
-                        }),
-                    )
-                    .finish()
-            }
-        }
-    }
-}
 
 /// AlphaType should be implemented for all Rust types that are exposed to Alpha.
 ///
