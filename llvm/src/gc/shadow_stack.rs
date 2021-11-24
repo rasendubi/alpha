@@ -3,29 +3,32 @@
 //! See https://llvm.org/docs/GarbageCollection.html#the-shadow-stack-gc for more information.
 use std::slice;
 
+#[derive(Debug)]
 #[repr(C)]
 pub struct FrameMap<const N: usize> {
-    /// Number of roots in [`StackEntry`].
-    num_roots: u32,
+    /// Number of roots in associated [`StackEntry`].
+    pub num_roots: u32,
     /// Number of metadata entries in `meta`.
-    num_meta: u32,
+    pub num_meta: u32,
     /// Metadata for each root.
     ///
     /// Note that this can be variably-sized.
-    meta: [*const u8; N],
+    pub meta: [*const u8; N],
 }
 
+#[derive(Debug)]
 #[repr(C)]
 pub struct StackEntry<const N: usize> {
     /// Link to next stack entry.
-    next: *mut StackEntry<0>,
+    pub next: *mut StackEntry<0>,
     /// [`FrameMap`] for this stack entry.
-    map: *const FrameMap<0>,
+    // TODO: NonNull?
+    pub map: *const FrameMap<0>,
     /// Stack roots (in-place array).
     ///
     /// Note that this can be variably-sized. The actual number of roots is stored at
     /// `(*map).num_roots`.
-    roots: [*const u8; N],
+    pub roots: [*const u8; N],
 }
 
 /// The head of the singly-linked list of StackEntry.
@@ -47,16 +50,12 @@ pub unsafe fn push_gcframe(root: &mut GcRootChain, frame: *mut StackEntry<0>) {
 /// For unchecked version, see [`pop_gcframe_unchecked()`].
 #[inline(always)]
 pub unsafe fn pop_gcframe(root: &mut GcRootChain, frame: *mut StackEntry<0>) {
+    debug_assert!(!root.is_null());
     debug_assert_eq!(*root, frame);
     pop_gcframe_unchecked(root);
 }
 
 /// Pops the last gc frame.
-///
-/// Additionally in debug build, checks that it matches the specified frame. This detects
-/// out-of-order frames pops.
-///
-/// For unchecked version, see [`pop_gcframe_unchecked()`].
 #[inline(always)]
 pub unsafe fn pop_gcframe_unchecked(root: &mut GcRootChain) {
     *root = (**root).next;

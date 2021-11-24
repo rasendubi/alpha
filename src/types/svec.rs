@@ -3,8 +3,8 @@ use std::mem::size_of;
 
 use tracing::trace;
 
-use crate::gc::{self, GcBox};
-use crate::{gc_box_slice, gc_frame};
+use crate::gc::{self, Gc};
+use crate::gc_frame;
 
 use crate::types::*;
 
@@ -23,15 +23,13 @@ impl SVec {
     #[tracing::instrument("SVec::new")]
     pub unsafe fn new(elements: &[AnyPtr]) -> *const Self {
         trace!("SVec::new({:?})", elements);
-        gc_box_slice!(elements);
-        let this = Self::alloc(elements.len());
-        let this = &mut *this;
-        let new_elements = elements
-            .iter()
-            .map(|x| x.load() as AnyPtr)
-            .collect::<Vec<_>>();
-        this.elements_mut().copy_from_slice(&new_elements);
-        this
+        gc::with_gc_box_slice(elements, |elements| {
+            let this = Self::alloc(elements.len());
+            let this = &mut *this;
+            let new_elements = elements.iter().map(|x| x.ptr()).collect::<Vec<_>>();
+            this.elements_mut().copy_from_slice(&new_elements);
+            this
+        })
     }
 
     /// Appends an element to the back of a collection.
@@ -52,8 +50,8 @@ impl SVec {
         debug_assert!(!this.is_null());
         debug_assert!(!value.is_null());
 
-        let this = GcBox::from_const_ptr(this);
-        let value = GcBox::from_const_ptr(value);
+        let this = Gc::from_const_ptr(this);
+        let value = Gc::from_const_ptr(value);
         gc_frame![this, value];
 
         let new_len = (*this.load()).len + 1;
@@ -70,8 +68,8 @@ impl SVec {
     /// this function.
     #[tracing::instrument("SVec::set")]
     pub unsafe fn set(this: *const Self, index: usize, value: AnyPtr) -> *const Self {
-        let this = GcBox::from_const_ptr(this);
-        let value = GcBox::from_const_ptr(value);
+        let this = Gc::from_const_ptr(this);
+        let value = Gc::from_const_ptr(value);
         gc_frame![this, value];
 
         let new = Self::clone_mut(this.load());
@@ -83,7 +81,7 @@ impl SVec {
     /// This function allocates GC memory. Therefore all GC values must be rooted before calling
     /// this function.
     unsafe fn clone_mut(this: *const Self) -> *mut Self {
-        let this = GcBox::from_const_ptr(this);
+        let this = Gc::from_const_ptr(this);
         gc_frame![this];
 
         let len = (*this.load()).len;

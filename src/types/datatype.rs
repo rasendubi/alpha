@@ -132,7 +132,7 @@ impl DataType {
             *new_methods
         );
 
-        (*this.load()).methods = new_methods;
+        (*this.load_mut()).methods = new_methods;
     }
 }
 

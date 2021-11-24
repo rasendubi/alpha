@@ -3,18 +3,19 @@ use std::collections::hash_map::DefaultHasher;
 use std::ffi::CStr;
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
+use std::sync::atomic::{AtomicPtr, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 
 use log::trace;
 
 use crate::gc;
-use crate::gc::GcBox;
-use crate::gc_global;
 use crate::types::*;
 
 #[ctor::ctor]
 static SYMBOLS_MUTEX: Mutex<()> = Mutex::new(());
-gc_global!(SYMBOLS_ROOT: SymbolNode);
+// SYMBOLS_ROOT is not gc_global because all symbols are perm-allocated. GC does not need to
+// traverse it.
+static SYMBOLS_ROOT: AtomicPtr<SymbolNode> = AtomicPtr::new(std::ptr::null_mut());
 
 // TODO: this whole module is probably not safe when GC kicks in. Symbol captures SymbolNode by
 // reference, however GC is allowed to relocate the SymbolNode making the reference invalid.
@@ -26,18 +27,18 @@ pub fn symbol(name: &str) -> Symbol {
     let node = unsafe {
         let res = SymbolNode::search(&SYMBOLS_ROOT, name);
         match res {
-            Ok(node) => &*node.load(),
+            Ok(node) => &*node.load(AtomicOrdering::SeqCst),
             Err(_place) => {
                 let _lock = SYMBOLS_MUTEX.lock().unwrap();
                 // We call search again because someone might have modified the tree between
                 // previous search and now.
                 let res = SymbolNode::search(&SYMBOLS_ROOT, name);
                 match res {
-                    Ok(node) => &*node.load(),
+                    Ok(node) => &*node.load(AtomicOrdering::SeqCst),
                     Err(place) => {
                         trace!("allocating symbol: {}", name);
                         let node = SymbolNode::allocate(name);
-                        place.store(node as *mut _);
+                        place.store(node as *mut _, AtomicOrdering::SeqCst);
                         if log::log_enabled!(log::Level::Trace) {
                             dump_symbols();
                         }
@@ -64,11 +65,11 @@ fn dump_symbols() {
             node.hash,
             indent = level * 2
         );
-        dump(level + 1, node.left.load());
-        dump(level + 1, node.right.load());
+        dump(level + 1, node.left.load(AtomicOrdering::SeqCst));
+        dump(level + 1, node.right.load(AtomicOrdering::SeqCst));
     }
 
-    dump(0, SYMBOLS_ROOT.load())
+    dump(0, SYMBOLS_ROOT.load(AtomicOrdering::SeqCst))
 }
 
 #[derive(Clone, Copy)]
@@ -125,8 +126,8 @@ impl std::fmt::Display for Symbol {
 #[repr(C)]
 pub struct SymbolNode {
     hash: u64,
-    left: GcBox<SymbolNode>,
-    right: GcBox<SymbolNode>,
+    left: AtomicPtr<SymbolNode>,
+    right: AtomicPtr<SymbolNode>,
     len: usize,
     /// Dynamically-sized and NUL-terminated. Actual type is [u8; len + 1].
     name: [u8; 0],
@@ -153,8 +154,8 @@ impl SymbolNode {
             let hash = Self::str_hash(s);
             *ptr = SymbolNode {
                 hash,
-                left: GcBox::new(),
-                right: GcBox::new(),
+                left: AtomicPtr::new(std::ptr::null_mut()),
+                right: AtomicPtr::new(std::ptr::null_mut()),
                 len: size,
                 name: [],
             };
@@ -179,20 +180,20 @@ impl SymbolNode {
     /// If symbol `s` is found, return it as `Ok()` node. If symbol is not found, returns the
     /// insertion place as `Err()` node.
     fn search<'a, 'b>(
-        node: &'a GcBox<SymbolNode>,
+        node: &'a AtomicPtr<SymbolNode>,
         s: &'b str,
-    ) -> Result<&'a GcBox<SymbolNode>, &'a GcBox<SymbolNode>> {
+    ) -> Result<&'a AtomicPtr<SymbolNode>, &'a AtomicPtr<SymbolNode>> {
         Self::search_with_hash(node, Self::str_hash(s), s)
     }
 
     // TODO: TCO is not guaranteed by Rust. It might be a good idea to rewrite this function as a
     // loop instead.
     fn search_with_hash<'a, 'b>(
-        node: &'a GcBox<SymbolNode>,
+        node: &'a AtomicPtr<SymbolNode>,
         hash: u64,
         s: &'b str,
-    ) -> Result<&'a GcBox<SymbolNode>, &'a GcBox<SymbolNode>> {
-        let this = node.load();
+    ) -> Result<&'a AtomicPtr<SymbolNode>, &'a AtomicPtr<SymbolNode>> {
+        let this = node.load(AtomicOrdering::SeqCst);
         if this.is_null() {
             return Err(node);
         }
@@ -290,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_symbol_search_null_root() {
-        let root = GcBox::new();
+        let root = AtomicPtr::new(std::ptr::null_mut());
         let result = SymbolNode::search(&root, "hello");
         assert!(result.is_err());
         assert!(std::ptr::eq(result.err().unwrap(), &root));

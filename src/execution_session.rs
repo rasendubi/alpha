@@ -583,7 +583,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     // Build a global type binding and initialize it. This does not execute any code inside the JIT.
-    fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<*mut DataType, Box<dyn Error>> {
+    fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<*const DataType, Box<dyn Error>> {
         trace!("type lowered to {:?}", alpha_type);
 
         let name = alpha_type.name;
@@ -636,8 +636,8 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         self.load_module(module)?;
 
-        let type_ptr_place = self.jit.lookup::<*mut AnyPtrMut>(name.as_str())?;
-        gc::add_global_root(unsafe { gc::GcRoot::from_ptr_unchecked(type_ptr_place) });
+        let type_ptr_place = self.jit.lookup::<*mut *const u8>(name.as_str())?;
+        unsafe { gc::add_global_root(gc::GcRoot::from_ptr_ref(type_ptr_place)) };
 
         if alpha_type.typedef != AlphaTypeDef::Abstract {
             let t = self.build_type_specifier(&alpha_type)?;
@@ -862,7 +862,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(fn_obj)
     }
 
-    fn define_function_type(&mut self, fn_name: &str) -> Result<*mut DataType, Box<dyn Error>> {
+    fn define_function_type(&mut self, fn_name: &str) -> Result<*const DataType, Box<dyn Error>> {
         let any_s = symbol("Any");
         let fn_t_name = symbol(&("fn_".to_string() + fn_name + "_t"));
         let fn_t = self.eval_type(&AlphaType {
@@ -908,8 +908,8 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_module(module)?;
 
         unsafe {
-            let fn_place = self.jit.lookup::<*mut AnyPtrMut>(f_global_name)?;
-            gc::add_global_root(gc::GcRoot::from_ptr_unchecked(fn_place));
+            let fn_place = self.jit.lookup::<*mut *const u8>(f_global_name)?;
+            gc::add_global_root(gc::GcRoot::from_ptr_ref(fn_place));
             assert_eq!(*fn_place, fn_obj.load().cast());
         }
 
@@ -1003,7 +1003,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         format!("{}.{}_", symbol.as_str(), i)
     }
 
-    fn optimize_function(module: &Module, f: Value) {
+    fn optimize_function(_module: &Module, _f: Value) {
         // use llvm::pass_manager::*;
         // let mut fpm = FunctionPassManager::new_for_module(module);
         // fpm.add_instruction_combining_pass();

@@ -27,9 +27,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloca"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37b10839cec2e830b745bb295e281f68fd649a8281496a5b65c00a687ead5227"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "alpha"
 version = "0.1.0"
 dependencies = [
+ "alloca",
  "atty",
  "backtrace",
  "cc",

@@ -12,33 +12,30 @@ use tracing::{debug, trace};
 
 use crate::types::*;
 
-pub use llvm::gc::shadow_stack::GcRootChain;
-
-pub static mut GC_ROOT_CHAIN: GcRootChain = std::ptr::null_mut();
+pub use llvm::gc::shadow_stack::{pop_gcframe, push_gcframe, FrameMap, GcRootChain, StackEntry};
 
 // TODO: this has to be thread-local when Alpha supports multi-threading.
-static mut GC_ROOTS: *const GcFrame = std::ptr::null();
+pub static mut GC_ROOT_CHAIN: GcRootChain = std::ptr::null_mut();
 
-static mut GC_GLOBAL_ROOTS: MaybeUninit<Mutex<HashSet<GcRoot<'static>>>> = MaybeUninit::uninit();
+static mut GC_GLOBAL_ROOTS: MaybeUninit<Mutex<HashSet<GcRoot<'static, u8>>>> =
+    MaybeUninit::uninit();
 fn gc_init() {
     static GC_INIT: Once = Once::new();
     GC_INIT.call_once(|| unsafe {
         GC_GLOBAL_ROOTS.write(Mutex::new(HashSet::new()));
     })
 }
-#[tracing::instrument]
-pub fn add_global_root(root: GcRoot<'static>) {
+// #[tracing::instrument]
+pub unsafe fn add_global_root(root: GcRoot<'static, u8>) {
     gc_init();
-    unsafe {
-        let mut roots = GC_GLOBAL_ROOTS.assume_init_ref().lock().unwrap();
-        trace!(
-            "Adding root: {:?} -> {:?}",
-            root.as_anyptr(),
-            *root.as_anyptr()
-        );
-        debug_ptr(*root.as_anyptr());
-        roots.insert(root);
-    }
+    let mut roots = GC_GLOBAL_ROOTS.assume_init_ref().lock().unwrap();
+    trace!(
+        "adding root: {:?} -> {:?}",
+        root.as_anyptr(),
+        *root.as_anyptr()
+    );
+    debug_ptr(*root.as_anyptr());
+    roots.insert(root);
 }
 
 static mut BLOCK: Block = Block {
@@ -61,11 +58,14 @@ const TESTING_GC: bool = true;
 #[macro_export]
 macro_rules! gc_global {
     ( $vis:vis $i:ident : $t:ty ) => {
-        $vis static $i: $crate::gc::GcBox<$t> = $crate::gc::GcBox::new();
         paste::paste! {
-            #[ctor::ctor]
+            static mut [<$i _GC>]: $crate::gc::Gc<$t> = $crate::gc::Gc::new();
+            $vis static $i: $crate::gc::GcRoot<'static, $t> = $crate::gc::GcRoot::new(unsafe {&[<$i _GC>]});
+            #[::ctor::ctor]
             fn [<$i:lower _register>]() {
-                $crate::gc::add_global_root($crate::gc::GcRoot::new(&$i));
+                unsafe {
+                    $crate::gc::add_global_root((&$i).cast().clone());
+                }
             }
         }
     };
@@ -74,168 +74,216 @@ macro_rules! gc_global {
 #[macro_export]
 macro_rules! gc_box {
     ( $i:ident ) => {
-        let $i = $crate::gc::GcBox::from_const_ptr($i);
+        let $i = $crate::gc::Gc::from_const_ptr($i);
         $crate::gc_frame![$i];
     };
 }
 
 #[macro_export]
-macro_rules! gc_frame {
-    ( $( $e:expr ),* ) => {
-        #[allow(unused_unsafe)]
-        let roots = unsafe { [ $( ::std::mem::transmute::<&::std::sync::atomic::AtomicPtr<_>, &::std::sync::atomic::AtomicPtr<()>>($e.as_ref()), )* ] };
-        let gc_frame = $crate::gc::GcFrame::new(&roots);
-        let _registration = $crate::gc::GcFrameRegistration::new(&gc_frame);
-    }
+macro_rules! count {
+    () => (0usize);
+    ( $x:tt $($xs:tt)* ) => (1usize + $crate::count!($($xs)*));
+}
+
+pub unsafe fn gcroot_of_type<T>(ptr: &*const u8, _prev: Gc<T>) -> GcRoot<T> {
+    GcRoot::from_ptr_ref(ptr as *const *const u8 as *const *const T)
 }
 
 #[macro_export]
-macro_rules! gc_box_slice {
-    ( $i:ident ) => {
-        let $i = $i
-            .iter()
-            .map(|x| $crate::gc::GcBox::from_const_ptr(*x))
-            .collect::<Vec<_>>();
+macro_rules! gc_frame {
+    ( $( $i:ident ),* ) => {
+        // Ideally, should be static.
+        let frame_map: ::llvm::gc::shadow_stack::FrameMap<0> = ::llvm::gc::shadow_stack::FrameMap::new($crate::count!( $($i)* ) as u32, []);
         #[allow(unused_unsafe)]
-        let roots = $i
-            .iter()
-            .map(|x| unsafe {
-                ::std::mem::transmute::<
-                    &::std::sync::atomic::AtomicPtr<_>,
-                    &::std::sync::atomic::AtomicPtr<()>,
-                >(x.as_ref())
-            })
-            .collect::<Vec<_>>();
-        let gc_frame = $crate::gc::GcFrame::new(&roots);
-        let _registration = $crate::gc::GcFrameRegistration::new(&gc_frame);
+        let stack_entry = unsafe {::llvm::gc::shadow_stack::StackEntry::new($crate::gc::GC_ROOT_CHAIN, &frame_map, [
+            $( $i.cast().ptr() ),*
+        ])};
+        #[allow(unused_unsafe)]
+        let _stack_entry_registration = unsafe{$crate::gc::GcFrameRegistration::new(&stack_entry)};
+        $crate::gc_frame!(@ stack_entry, 0, $($i)*)
+    };
+    ( @ $stack_entry:ident, $n:expr, $i:ident $($is:ident)* ) => {
+        #[allow(unused_unsafe)]
+        let $i = unsafe {$crate::gc::gcroot_of_type(&($stack_entry).roots[$n], $i)};
+        $crate::gc_frame!(@ $stack_entry, ($n + 1), $($is)*)
+    };
+    ( @ $stack_entry:ident, $n:expr, ) => {
     };
 }
 
-#[derive(Debug)]
-#[repr(C)]
-pub struct GcBox<T> {
-    ptr: AtomicPtr<T>,
+pub fn with_gc_box_slice<T, R, F: FnOnce(&[Gc<T>]) -> R>(elements: &[*const T], f: F) -> R {
+    let frame_map = FrameMap::new(elements.len() as u32, []);
+    alloca::with_alloca(
+        std::mem::size_of::<StackEntry<0>>() + std::mem::size_of::<*const T>() * elements.len(),
+        |mem| unsafe {
+            let ptr = mem.as_mut_ptr().cast::<StackEntry<0>>();
+            *ptr = StackEntry::new(GC_ROOT_CHAIN, &frame_map, []);
+            let elements_ptr = ptr.add(1).cast::<*const T>();
+            let new_elements = std::slice::from_raw_parts_mut(elements_ptr, elements.len());
+            new_elements.copy_from_slice(elements);
+            let _registration = GcFrameRegistration::new::<0>(&*ptr);
+            f(std::slice::from_raw_parts(
+                elements_ptr.cast::<Gc<T>>(),
+                elements.len(),
+            ))
+        },
+    )
 }
 
-impl<T> GcBox<T> {
-    pub const fn new() -> GcBox<T> {
-        GcBox {
-            ptr: AtomicPtr::new(std::ptr::null_mut()),
-        }
-    }
+// #[macro_export]
+// macro_rules! gc_box_slice {
+//     ( $i:ident ) => {
+//         ::alloca::
+//         // let $i = $i
+//         //     .iter()
+//         //     .map(|x| $crate::gc::Gc::from_const_ptr(*x))
+//         //     .collect::<Vec<_>>();
+//         // #[allow(unused_unsafe)]
+//         // let roots = $i
+//         //     .iter()
+//         //     .map(|x| unsafe {
+//         //         ::std::mem::transmute::<
+//         //             &::std::sync::atomic::AtomicPtr<_>,
+//         //             &::std::sync::atomic::AtomicPtr<()>,
+//         //         >(x.as_ref())
+//         //     })
+//         //     .collect::<Vec<_>>();
+//         // let gc_frame = $crate::gc::GcFrame::new(&roots);
+//         // let _registration = $crate::gc::GcFrameRegistration::new(&gc_frame);
+//     };
+// }
 
-    #[allow(dead_code)]
-    pub const fn from_ptr(ptr: *mut T) -> Self {
-        GcBox {
-            ptr: AtomicPtr::new(ptr),
-        }
+/// A pointer to GC-managed value.
+///
+/// Must be rooted at safepoints.
+#[derive(Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct Gc<T>(*const T);
+
+impl<T> Gc<T> {
+    pub const fn new() -> Self {
+        Self(std::ptr::null_mut())
     }
 
     pub const fn from_const_ptr(ptr: *const T) -> Self {
-        GcBox {
-            ptr: AtomicPtr::new(ptr as *mut T),
-        }
+        Self(ptr as *mut T)
     }
 
-    pub fn as_ref(&self) -> &AtomicPtr<T> {
-        &self.ptr
+    pub fn ptr(&self) -> *const T {
+        self.0
     }
 
-    pub fn load(&self) -> *mut T {
-        self.ptr.load(Ordering::SeqCst)
+    pub fn set_ptr(&mut self, ptr: *const T) {
+        self.0 = ptr;
     }
 
-    pub fn store(&self, ptr: *mut T) {
-        self.ptr.store(ptr, Ordering::SeqCst);
+    pub fn cast<T2>(&self) -> &Gc<T2> {
+        unsafe { std::mem::transmute_copy::<&Self, &Gc<T2>>(&self) }
     }
-}
 
-#[derive(Debug)]
-pub struct GcFrame<'a> {
-    prev: *const GcFrame<'static>,
-    roots: &'a [&'a AtomicPtr<()>],
-}
-impl<'a> GcFrame<'a> {
-    pub fn new(roots: &'a [&'a AtomicPtr<()>]) -> Self {
-        Self {
-            prev: unsafe { GC_ROOTS },
-            roots,
-        }
+    pub fn cast_mut<T2>(&mut self) -> &mut Gc<T2> {
+        unsafe { std::mem::transmute_copy::<&mut Self, &mut Gc<T2>>(&self) }
     }
 }
 
 #[derive(Debug)]
 pub struct GcFrameRegistration<'a> {
-    frame: *const GcFrame<'a>,
+    frame: *mut StackEntry<0>,
+    _phantom: PhantomData<&'a StackEntry<0>>,
 }
 impl<'a> GcFrameRegistration<'a> {
-    pub fn new(frame: &'a GcFrame<'a>) -> Self {
-        let frame = frame as _;
+    pub fn new<const N: usize>(frame: &'a StackEntry<N>) -> Self {
+        let frame = StackEntry::as_unsized(frame) as *mut StackEntry<0>;
         unsafe {
-            let frame = std::mem::transmute::<*const GcFrame<'a>, *const GcFrame<'static>>(frame);
-            // The cast is obviously unsafe, but we rely on the Drop implementation of
-            // GcFrameRegistration to remove the frame from GC_ROOTS when it comes out of scope.
-            GC_ROOTS = frame
+            push_gcframe(&mut GC_ROOT_CHAIN, frame);
         }
-        Self { frame }
+        Self {
+            frame,
+            _phantom: PhantomData,
+        }
     }
 }
 impl<'a> Drop for GcFrameRegistration<'a> {
     fn drop(&mut self) {
         unsafe {
-            debug_assert!(!GC_ROOTS.is_null());
-            debug_assert!(GC_ROOTS == self.frame);
-            GC_ROOTS = (*GC_ROOTS).prev;
+            pop_gcframe(&mut GC_ROOT_CHAIN, self.frame);
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 #[repr(C)]
-pub struct GcRoot<'a> {
-    ptr: *const AtomicPtr<()>,
-    _phantom: PhantomData<&'a AtomicPtr<()>>,
+pub struct GcRoot<'a, T> {
+    ptr: *mut Gc<T>,
+    _phantom: PhantomData<&'a Gc<T>>,
 }
 
-unsafe impl<'a> Sync for GcRoot<'a> {}
+unsafe impl<'a, T> Sync for GcRoot<'a, T> {}
 
-impl<'a> std::cmp::PartialEq<GcRoot<'a>> for GcRoot<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        (self.ptr as *const _) == other.ptr
-    }
-}
-
-impl<'a> std::cmp::Eq for GcRoot<'a> {}
-
-impl<'a> std::hash::Hash for GcRoot<'a> {
-    fn hash<H>(&self, hasher: &mut H)
-    where
-        H: std::hash::Hasher,
-    {
-        (self.ptr as *const AtomicPtr<_>).hash(hasher);
-    }
-}
-
-impl<'a> GcRoot<'a> {
-    pub fn new<T>(b: &'a GcBox<T>) -> Self {
+impl<'a, T> GcRoot<'a, T> {
+    pub const fn new(ptr: &'a Gc<T>) -> Self {
         // trace!("New gc root at: {:p}", b);
         GcRoot {
-            ptr: (&b.ptr as *const AtomicPtr<T>).cast::<AtomicPtr<()>>(),
+            ptr: ptr as *const Gc<T> as *mut Gc<T>,
             _phantom: PhantomData,
         }
     }
 
-    pub unsafe fn from_ptr_unchecked<T>(ptr: *mut *mut T) -> Self {
-        GcRoot {
-            ptr: ptr.cast::<AtomicPtr<()>>(),
+    pub const fn from_ptr_ref(ptr: *const *const T) -> Self {
+        Self {
+            ptr: (ptr as *const *const T) as *mut Gc<T>,
             _phantom: PhantomData,
         }
     }
+
+    // TODO: deprecate
+    // #[deprecated]
+    pub fn load(&self) -> *const T {
+        self.ptr()
+    }
+
+    pub fn load_mut(&self) -> *mut T {
+        unsafe { (*self.ptr).0 as *mut T }
+    }
+
+    // TODO:
+    // pub fn store(&self, ptr: Gc<T>) {
+    pub fn store(&self, ptr: *const T) {
+        unsafe {
+            (*self.ptr).0 = ptr;
+        }
+    }
+
+    pub fn as_ref(&self) -> &*const T {
+        unsafe { &(*self.ptr).0 }
+    }
+
+    pub fn ptr(&self) -> *const T {
+        unsafe { (*self.ptr).ptr() }
+    }
+
+    pub fn cast<T2>(&self) -> &GcRoot<T2> {
+        unsafe { std::mem::transmute_copy::<&Self, &GcRoot<T2>>(&self) }
+    }
+
+    pub fn cast_mut<T2>(&mut self) -> &mut GcRoot<T2> {
+        unsafe { std::mem::transmute_copy::<&mut Self, &mut GcRoot<T2>>(&self) }
+    }
+
+    // pub unsafe fn from_ptr_unchecked<T>(ptr: *mut *mut T) -> Self {
+    //     GcRoot {
+    //         ptr: ptr.cast::<AtomicPtr<()>>(),
+    //     }
+    // }
 
     fn as_anyptr(&self) -> *mut AnyPtrMut {
-        (self.ptr as *mut AtomicPtr<()>).cast()
-        // unsafe { std::mem::transmute::<_, *mut AnyPtrMut>(self.ptr as *const AtomicPtr<()>) }
+        self.ptr.cast()
     }
+
+    // fn as_anyptr(&self) -> *mut AnyPtrMut {
+    //     (self.ptr as *mut AtomicPtr<()>).cast()
+    //     // unsafe { std::mem::transmute::<_, *mut AnyPtrMut>(self.ptr as *const AtomicPtr<()>) }
+    // }
 }
 
 struct Block {
@@ -540,24 +588,24 @@ pub unsafe fn collect_garbage() {
     trace!("after globals");
     debug_trace_blocks();
 
-    {
-        let span = tracing::trace_span!("trace_roots");
-        let _guard = span.enter();
+    // {
+    //     let span = tracing::trace_span!("trace_roots");
+    //     let _guard = span.enter();
 
-        let mut cur = GC_ROOTS;
-        while !cur.is_null() {
-            for root in (*cur).roots.iter() {
-                let root: &AtomicPtr<()> = *root;
-                static_assertions::assert_eq_size!(AtomicPtr<()>, *mut ());
-                let root = (root as *const AtomicPtr<()> as *mut AtomicPtr<()>).cast::<AnyPtrMut>();
-                // This is stated in the AtomicPtr doc, but good to re-check.
-                if !trace_ptr(root) {
-                    trace_value(*root);
-                }
-            }
-            cur = (*cur).prev;
-        }
-    }
+    //     let mut cur = GC_ROOTS;
+    //     while !cur.is_null() {
+    //         for root in (*cur).roots.iter() {
+    //             let root: &AtomicPtr<()> = *root;
+    //             static_assertions::assert_eq_size!(AtomicPtr<()>, *mut ());
+    //             let root = (root as *const AtomicPtr<()> as *mut AtomicPtr<()>).cast::<AnyPtrMut>();
+    //             // This is stated in the AtomicPtr doc, but good to re-check.
+    //             if !trace_ptr(root) {
+    //                 trace_value(*root);
+    //             }
+    //         }
+    //         cur = (*cur).prev;
+    //     }
+    // }
 
     {
         let span = tracing::trace_span!("llvm_gc_root_chain");
@@ -749,7 +797,7 @@ mod tests {
             gc_box!(m);
             collect_garbage();
 
-            DataType::add_method(ty.load(), m.load());
+            DataType::add_method(ty.load_mut(), m.load());
 
             assert_eq!((*(*ty.load()).methods).len(), 1);
 
@@ -769,6 +817,36 @@ mod tests {
             gc_box!(t);
             collect_garbage();
 
+            assert_eq!((*t.load()).t, ty.load());
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn type_t_method() {
+        crate::types::init();
+        unsafe {
+            let ty = DataType::new(symbol("TestDataType"), ANY_T.load(), 0, &[]);
+            gc_box!(ty);
+            let t = Type::new(ty.load());
+            gc_box!(t);
+            collect_garbage();
+
+            assert_eq!((*t.load()).t, ty.load());
+
+            let signature = SVec::push(SVEC_EMPTY.load(), t.load().cast());
+            gc_box!(signature);
+            let m = Method::new(signature.load(), nothing);
+            gc_box!(m);
+            collect_garbage();
+
+            DataType::add_method(ty.load_mut(), m.load());
+
+            let methods = (*ty.load()).methods;
+            assert_eq!((*methods).len(), 1);
+            let method = (*methods).elements()[0].cast::<Method>();
+            assert_eq!(method, m.load());
+            assert_eq!((*(*method).signature).elements()[0], t.load().cast());
             assert_eq!((*t.load()).t, ty.load());
         }
     }

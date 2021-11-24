@@ -19,7 +19,7 @@ pub use self::void::*;
 use crate::env::Env;
 use crate::exp::{TypeDefinition, TypeSpecifier};
 use crate::gc;
-use crate::gc::GcBox;
+use crate::gc::GcRoot;
 use crate::gc_global;
 
 use std::error::Error;
@@ -170,7 +170,7 @@ gc_global!(pub F64_T: DataType);
 gc_global!(pub I64_T: DataType);
 
 #[inline]
-unsafe fn allocate_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
+unsafe fn allocate_global_type<T: AlphaValue>(global: &GcRoot<DataType>) {
     let ptrs = T::pointers();
     let t = DataType::allocate_perm(ptrs.len());
     set_typetag(t, DATATYPE_T.load());
@@ -180,8 +180,8 @@ unsafe fn allocate_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
 }
 
 #[inline]
-unsafe fn initialize_global_type<T: AlphaValue>(global: &GcBox<DataType>) {
-    *global.load() = T::datatype();
+unsafe fn initialize_global_type<T: AlphaValue>(global: &GcRoot<DataType>) {
+    *global.load_mut() = T::datatype();
 }
 
 pub fn init() {
@@ -225,7 +225,7 @@ pub fn init() {
         }
 
         {
-            let any_t = ANY_T.load();
+            let any_t = ANY_T.load_mut();
             *any_t = DataType {
                 name: symbol("Any"),
                 supertype: any_t,
