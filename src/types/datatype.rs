@@ -89,6 +89,10 @@ impl DataType {
         unsafe { std::slice::from_raw_parts_mut(self.pointers.as_mut_ptr(), self.n_ptrs) }
     }
 
+    pub unsafe fn reset_methods(this: *mut Self) {
+        (*this).methods = SVEC_EMPTY.load();
+    }
+
     pub unsafe fn add_method(this: *mut Self, method: *const Method) {
         debug_assert!(!this.is_null());
         debug_assert!(!method.is_null());

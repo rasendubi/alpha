@@ -38,6 +38,13 @@ pub unsafe fn add_global_root(root: GcRoot<'static, u8>) {
     roots.insert(root);
 }
 
+pub unsafe fn remove_global_root(root: &GcRoot<'static, u8>) {
+    let mut roots = GC_GLOBAL_ROOTS.assume_init_ref().lock().unwrap();
+    trace!("removing root: {:?}", root.as_anyptr(),);
+    let removed = roots.remove(root);
+    debug_assert!(removed);
+}
+
 static mut BLOCK: Block = Block {
     start: std::ptr::null_mut(),
     cur: AtomicPtr::new(std::ptr::null_mut()),

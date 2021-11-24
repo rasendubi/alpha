@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::io::Write;
 use std::sync::Mutex;
@@ -17,7 +18,7 @@ use crate::env::Env;
 use crate::exp;
 use crate::exp::{lower_sexp, Exp};
 use crate::gc;
-use crate::gc::{GcRootChain, GC_ROOT_CHAIN};
+use crate::gc::{GcRoot, GcRootChain, GC_ROOT_CHAIN};
 use crate::gc_box;
 use crate::parser::Parser;
 use crate::types::*;
@@ -225,6 +226,9 @@ pub struct ExecutionSession<'ctx> {
     /// A module that contains global declarations to be copied into each new module. The module
     /// itself is never passed into JIT.
     globals: Module,
+    /// These need to be removed from global roots when ExecutionSession is destroyed. Otherwise, GC
+    /// will try to scavenge them and will segfault.
+    global_gc_roots: HashSet<GcRoot<'static, u8>>,
     jit: LLJIT,
     global_env: Env<'ctx, EnvValue>,
     types: Env<'ctx, AlphaType>,
@@ -246,6 +250,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             counter: 0,
             context,
             global_env,
+            global_gc_roots: HashSet::new(),
             jit,
             globals,
             types,
@@ -294,6 +299,13 @@ impl<'ctx> ExecutionSession<'ctx> {
     ///
     /// This functions must be called once before any other operation on ExecutionSession.
     fn build_stdlib(&mut self) -> Result<(), Box<dyn Error>> {
+        // If that's a second instantiation of ExecutionSession, delete previously stored
+        // constructors.
+        // TODO: not thread-safe
+        unsafe {
+            DataType::reset_methods(DATATYPE_T.load_mut());
+        }
+
         let any_t = self.context.context().create_named_struct_type("Any"); // opaque
         let datatype_t = self.context.context().create_named_struct_type("DataType"); // to be defined
         let datatype_ptr_t = datatype_t.pointer_type(AddressSpace::Generic);
@@ -637,7 +649,9 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_module(module)?;
 
         let type_ptr_place = self.jit.lookup::<*mut *const u8>(name.as_str())?;
-        unsafe { gc::add_global_root(gc::GcRoot::from_ptr_ref(type_ptr_place)) };
+        unsafe {
+            self.register_gc_root(type_ptr_place);
+        }
 
         if alpha_type.typedef != AlphaTypeDef::Abstract {
             let t = self.build_type_specifier(&alpha_type)?;
@@ -909,8 +923,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         unsafe {
             let fn_place = self.jit.lookup::<*mut *const u8>(f_global_name)?;
-            gc::add_global_root(gc::GcRoot::from_ptr_ref(fn_place));
-            assert_eq!(*fn_place, fn_obj.load().cast());
+            self.register_gc_root(fn_place);
         }
 
         Ok(fn_obj.load().cast())
@@ -1012,5 +1025,21 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         // let pm = ModulePassManager::new();
         // pm.run(module);
+    }
+
+    unsafe fn register_gc_root(&mut self, ptr: *const *const u8) {
+        let root = GcRoot::from_ptr_ref(ptr);
+        self.global_gc_roots.insert(root.clone());
+        gc::add_global_root(root);
+    }
+}
+
+impl<'ctx> Drop for ExecutionSession<'ctx> {
+    fn drop(&mut self) {
+        for root in self.global_gc_roots.iter() {
+            unsafe {
+                gc::remove_global_root(root);
+            }
+        }
     }
 }
