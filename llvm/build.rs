@@ -3,5 +3,5 @@ fn main() {
         .cpp(true)
         .shared_flag(true)
         .file("src/llvm-gc.cpp")
-        .compile("libllvm-alpha.so");
+        .compile("llvmrs");
 }

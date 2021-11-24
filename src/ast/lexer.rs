@@ -1,4 +1,5 @@
-use logos::{Logos, Lexer};
+//! Alpha tokens
+use logos::{Lexer, Logos};
 
 #[derive(Logos, Debug, PartialEq)]
 pub enum Token<'a> {

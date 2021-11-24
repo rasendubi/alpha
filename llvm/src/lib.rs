@@ -3,6 +3,7 @@ pub mod builder;
 pub mod context;
 pub mod error;
 pub mod gc;
+pub mod init;
 pub mod module;
 pub mod orc;
 pub mod pass_manager;

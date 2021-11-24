@@ -4,7 +4,7 @@ use std::error::Error;
 
 use simple_error::{bail, simple_error};
 
-use crate::sexp::SExp;
+use crate::ast::sexp::SExp;
 use crate::{symbol, Symbol};
 
 #[derive(Debug, PartialEq, Clone)]

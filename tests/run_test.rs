@@ -19,7 +19,14 @@ macro_rules! output_test {
 pub fn run_output_test(input: &str) -> String {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        pretty_env_logger::init();
+        tracing_subscriber::fmt()
+            .without_time()
+            .with_target(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            // disable colors for non-terminal output
+            .with_ansi(atty::is(atty::Stream::Stderr))
+            .init();
         init();
     });
 

@@ -1,3 +1,4 @@
+//! Parser converts a string into [`SExp`].
 use std::array::IntoIter;
 use std::collections::HashMap;
 use std::error::Error;
@@ -7,8 +8,8 @@ use simple_error::{bail, simple_error};
 
 use logos::{Lexer, Logos};
 
-use crate::lexer::Token;
-use crate::sexp::SExp;
+use crate::ast::lexer::Token;
+use crate::ast::sexp::SExp;
 
 pub struct Parser<'a> {
     pub lexer: Peekable<Lexer<'a, Token<'a>>>,

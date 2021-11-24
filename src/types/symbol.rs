@@ -6,13 +6,14 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicPtr, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 
-use log::trace;
+use once_cell::sync::Lazy;
+use tracing::trace;
 
 use crate::gc;
 use crate::types::*;
 
-#[ctor::ctor]
-static SYMBOLS_MUTEX: Mutex<()> = Mutex::new(());
+/// `SYMBOLS_MUTEX` protects [`SYMBOLS_ROOT`] for writes.
+static SYMBOLS_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 // SYMBOLS_ROOT is not gc_global because all symbols are perm-allocated. GC does not need to
 // traverse it.
 static SYMBOLS_ROOT: AtomicPtr<SymbolNode> = AtomicPtr::new(std::ptr::null_mut());
@@ -39,9 +40,6 @@ pub fn symbol(name: &str) -> Symbol {
                         trace!("allocating symbol: {}", name);
                         let node = SymbolNode::allocate(name);
                         place.store(node as *mut _, AtomicOrdering::SeqCst);
-                        if log::log_enabled!(log::Level::Trace) {
-                            dump_symbols();
-                        }
                         &*node
                     }
                 }
@@ -52,6 +50,7 @@ pub fn symbol(name: &str) -> Symbol {
     Symbol { node }
 }
 
+#[allow(unused)] // might be useful to debugging
 fn dump_symbols() {
     fn dump(level: usize, node: *const SymbolNode) {
         if node.is_null() {
@@ -122,7 +121,6 @@ impl std::fmt::Display for Symbol {
     }
 }
 
-#[derive(Debug)]
 #[repr(C)]
 pub struct SymbolNode {
     hash: u64,
@@ -131,6 +129,17 @@ pub struct SymbolNode {
     len: usize,
     /// Dynamically-sized and NUL-terminated. Actual type is [u8; len + 1].
     name: [u8; 0],
+}
+
+impl std::fmt::Debug for SymbolNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        f.debug_struct("SymbolNode")
+            .field("hash", &self.hash)
+            .field("left", &self.left)
+            .field("right", &self.right)
+            .field("name", &self.name())
+            .finish()
+    }
 }
 
 impl SymbolNode {
@@ -227,11 +236,10 @@ impl SymbolNode {
     }
 }
 
-impl AlphaValue for SymbolNode {
+impl AlphaType for SymbolNode {
     fn typetag() -> *const DataType {
         SYMBOL_T.load()
     }
-
     fn datatype() -> DataType {
         DataType {
             name: symbol("Symbol"),
@@ -243,22 +251,6 @@ impl AlphaValue for SymbolNode {
             pointers: [],
         }
     }
-
-    fn size(ptr: *const Self) -> usize {
-        unsafe { size_of::<Self>() + (*ptr).len + 1 }
-    }
-
-    fn trace_pointers<F>(this: *mut Self, mut trace_ptr: F)
-    where
-        F: FnMut(*mut AnyPtrMut) -> bool,
-    {
-        unsafe {
-            // TODO: remove transmute
-            trace_ptr(std::mem::transmute(&mut (*this).left));
-            trace_ptr(std::mem::transmute(&mut (*this).right));
-        }
-    }
-
     fn pointers() -> &'static [usize] {
         static PTRS: [usize; 2] = [
             // TODO: very unsafe. Use offset_from() when it becomes const
@@ -266,6 +258,20 @@ impl AlphaValue for SymbolNode {
             2 * 8, // right
         ];
         &PTRS
+    }
+}
+impl AlphaDataType for SymbolNode {
+    fn size(&self) -> usize {
+        size_of::<Self>() + self.len + 1
+    }
+
+    fn trace_pointers(&mut self, _trace_ptr: unsafe fn(*mut AnyPtrMut) -> bool) {
+        // All symbols are perm-allocated, so they do not need to be traced.
+        // unsafe {
+        //     // TODO: remove transmute
+        //     trace_ptr(std::mem::transmute(&mut (*this).left));
+        //     trace_ptr(std::mem::transmute(&mut (*this).right));
+        // }
     }
 }
 

@@ -41,7 +41,7 @@ impl SVec {
     /// this function.
     #[tracing::instrument("SVec::push")]
     pub unsafe fn push(this: *const Self, value: AnyPtr) -> *const Self {
-        log::trace!(
+        trace!(
             "SVec::push({:p}, {:p} ty={:p})",
             this,
             value,
@@ -50,8 +50,8 @@ impl SVec {
         debug_assert!(!this.is_null());
         debug_assert!(!value.is_null());
 
-        let this = Gc::from_const_ptr(this);
-        let value = Gc::from_const_ptr(value);
+        let this = Gc::new(this);
+        let value = Gc::new(value);
         gc_frame![this, value];
 
         let new_len = (*this.load()).len + 1;
@@ -68,8 +68,8 @@ impl SVec {
     /// this function.
     #[tracing::instrument("SVec::set")]
     pub unsafe fn set(this: *const Self, index: usize, value: AnyPtr) -> *const Self {
-        let this = Gc::from_const_ptr(this);
-        let value = Gc::from_const_ptr(value);
+        let this = Gc::new(this);
+        let value = Gc::new(value);
         gc_frame![this, value];
 
         let new = Self::clone_mut(this.load());
@@ -81,7 +81,7 @@ impl SVec {
     /// This function allocates GC memory. Therefore all GC values must be rooted before calling
     /// this function.
     unsafe fn clone_mut(this: *const Self) -> *mut Self {
-        let this = Gc::from_const_ptr(this);
+        let this = Gc::new(this);
         gc_frame![this];
 
         let len = (*this.load()).len;
@@ -118,7 +118,7 @@ impl SVec {
 
 impl std::fmt::Debug for SVec {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        write!(f, "{:?}", self.elements())
+        f.debug_tuple("SVec").field(&self.elements()).finish()
     }
 }
 
@@ -128,11 +128,10 @@ impl std::cmp::PartialEq<SVec> for SVec {
     }
 }
 
-impl AlphaValue for SVec {
+impl AlphaType for SVec {
     fn typetag() -> *const DataType {
         SVEC_T.load()
     }
-
     fn datatype() -> DataType {
         DataType {
             name: symbol("SVec"),
@@ -144,17 +143,15 @@ impl AlphaValue for SVec {
             pointers: [], // not true. special-cased in GC to call trace_pointers()
         }
     }
-
-    fn size(ptr: *const Self) -> usize {
-        unsafe { size_of::<Self>() + (*ptr).len * size_of::<AnyPtr>() }
+}
+impl AlphaDataType for SVec {
+    fn size(&self) -> usize {
+        size_of::<Self>() + self.len * size_of::<AnyPtr>()
     }
 
-    fn trace_pointers<F>(this: *mut Self, mut trace_ptr: F)
-    where
-        F: FnMut(*mut AnyPtrMut) -> bool,
-    {
+    fn trace_pointers(&mut self, trace_ptr: unsafe fn(*mut AnyPtrMut) -> bool) {
         unsafe {
-            for element in (*this).elements_mut() {
+            for element in self.elements_mut() {
                 // TODO: remove transmute
                 trace_ptr(std::mem::transmute(element as *mut AnyPtr));
             }

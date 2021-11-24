@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 use std::sync::Once;
 
-use once_cell::sync::Lazy;
 use pretty_hex::{HexConfig, PrettyHex};
 use tracing::{debug, trace};
 
@@ -25,7 +24,7 @@ fn gc_init() {
         GC_GLOBAL_ROOTS.write(Mutex::new(HashSet::new()));
     })
 }
-// #[tracing::instrument]
+#[tracing::instrument]
 pub unsafe fn add_global_root(root: GcRoot<'static, u8>) {
     gc_init();
     let mut roots = GC_GLOBAL_ROOTS.assume_init_ref().lock().unwrap();
@@ -45,13 +44,13 @@ pub unsafe fn remove_global_root(root: &GcRoot<'static, u8>) {
     debug_assert!(removed);
 }
 
-static mut BLOCK: Block = Block {
+static mut TO: Block = Block {
     start: std::ptr::null_mut(),
     cur: AtomicPtr::new(std::ptr::null_mut()),
     end: std::ptr::null_mut(),
     allocation: MaybeUninit::uninit(),
 };
-static mut PREV: Block = Block {
+static mut FROM: Block = Block {
     start: std::ptr::null_mut(),
     cur: AtomicPtr::new(std::ptr::null_mut()),
     end: std::ptr::null_mut(),
@@ -60,13 +59,11 @@ static mut PREV: Block = Block {
 
 const GC_THRESHOLD: isize = 256;
 
-const TESTING_GC: bool = true;
-
 #[macro_export]
 macro_rules! gc_global {
     ( $vis:vis $i:ident : $t:ty ) => {
         paste::paste! {
-            static mut [<$i _GC>]: $crate::gc::Gc<$t> = $crate::gc::Gc::new();
+            static mut [<$i _GC>]: $crate::gc::Gc<$t> = $crate::gc::Gc::null();
             $vis static $i: $crate::gc::GcRoot<'static, $t> = $crate::gc::GcRoot::new(unsafe {&[<$i _GC>]});
             #[::ctor::ctor]
             fn [<$i:lower _register>]() {
@@ -81,7 +78,7 @@ macro_rules! gc_global {
 #[macro_export]
 macro_rules! gc_box {
     ( $i:ident ) => {
-        let $i = $crate::gc::Gc::from_const_ptr($i);
+        let $i = $crate::gc::Gc::new($i);
         $crate::gc_frame![$i];
     };
 }
@@ -92,7 +89,7 @@ macro_rules! count {
     ( $x:tt $($xs:tt)* ) => (1usize + $crate::count!($($xs)*));
 }
 
-pub unsafe fn gcroot_of_type<T>(ptr: &*const u8, _prev: Gc<T>) -> GcRoot<T> {
+pub unsafe fn gcroot_of_type<T>(ptr: &*const u8, _to: Gc<T>) -> GcRoot<T> {
     GcRoot::from_ptr_ref(ptr as *const *const u8 as *const *const T)
 }
 
@@ -137,29 +134,6 @@ pub fn with_gc_box_slice<T, R, F: FnOnce(&[Gc<T>]) -> R>(elements: &[*const T], 
     )
 }
 
-// #[macro_export]
-// macro_rules! gc_box_slice {
-//     ( $i:ident ) => {
-//         ::alloca::
-//         // let $i = $i
-//         //     .iter()
-//         //     .map(|x| $crate::gc::Gc::from_const_ptr(*x))
-//         //     .collect::<Vec<_>>();
-//         // #[allow(unused_unsafe)]
-//         // let roots = $i
-//         //     .iter()
-//         //     .map(|x| unsafe {
-//         //         ::std::mem::transmute::<
-//         //             &::std::sync::atomic::AtomicPtr<_>,
-//         //             &::std::sync::atomic::AtomicPtr<()>,
-//         //         >(x.as_ref())
-//         //     })
-//         //     .collect::<Vec<_>>();
-//         // let gc_frame = $crate::gc::GcFrame::new(&roots);
-//         // let _registration = $crate::gc::GcFrameRegistration::new(&gc_frame);
-//     };
-// }
-
 /// A pointer to GC-managed value.
 ///
 /// Must be rooted at safepoints.
@@ -168,12 +142,12 @@ pub fn with_gc_box_slice<T, R, F: FnOnce(&[Gc<T>]) -> R>(elements: &[*const T], 
 pub struct Gc<T>(*const T);
 
 impl<T> Gc<T> {
-    pub const fn new() -> Self {
-        Self(std::ptr::null_mut())
+    pub const fn new(ptr: *const T) -> Self {
+        Self(ptr)
     }
 
-    pub const fn from_const_ptr(ptr: *const T) -> Self {
-        Self(ptr as *mut T)
+    pub const fn null() -> Self {
+        Self(std::ptr::null_mut())
     }
 
     pub fn ptr(&self) -> *const T {
@@ -360,7 +334,7 @@ pub unsafe fn allocate(size: usize) -> *mut u8 {
     maybe_collect_garbage();
     // TODO: handle alignment
     let size = align_size(size);
-    let start = BLOCK.bump(size + 8 /* typetag */);
+    let start = TO.bump(size + 8 /* typetag */);
     let start = start.unwrap_or_else(|| panic!("gc: out of memory"));
     let result = start.add(8 /* typetag */);
     trace!("allocting from:\n{:?}", backtrace::Backtrace::new());
@@ -376,7 +350,11 @@ pub unsafe fn allocate_perm(size: usize) -> *mut u8 {
 }
 
 pub unsafe fn maybe_collect_garbage() {
-    if TESTING_GC || BLOCK.end.offset_from(BLOCK.cur.load(Ordering::SeqCst)) < GC_THRESHOLD {
+    #[cfg(feature = "gc_debug")]
+    collect_garbage();
+
+    #[cfg(not(feature = "gc_debug"))]
+    if TO.end.offset_from(TO.cur.load(Ordering::SeqCst)) < GC_THRESHOLD {
         collect_garbage();
     }
 }
@@ -387,13 +365,13 @@ pub unsafe fn data_size(ptr: AnyPtr) -> usize {
     debug_assert_eq!((ty as usize) & 0x1, 0x0); // value should not be moved out
     let ty = resolve_moved_out(ty as AnyPtr) as *const DataType; // type can be though
     let size = if ty == STRING_T.load() {
-        AlphaString::size(ptr as *const AlphaString)
+        AlphaString::size(&*(ptr as *const AlphaString))
     } else if ty == SYMBOL_T.load() {
-        SymbolNode::size(ptr as *const SymbolNode)
+        SymbolNode::size(&*(ptr as *const SymbolNode))
     } else if ty == SVEC_T.load() {
-        SVec::size(ptr as *const SVec)
+        SVec::size(&*(ptr as *const SVec))
     } else if ty == METHOD_T.load() {
-        Method::size(ptr as *const Method)
+        Method::size(&*(ptr as *const Method))
     } else {
         // regular datatype
         let ty_ty = get_typetag(ty);
@@ -455,129 +433,27 @@ pub unsafe fn collect_garbage() {
     debug!("collecting garbage");
     trace!(
         "  from@{:p}: {:x?}",
-        BLOCK.start,
-        block_to_slice(&BLOCK).hex_conf(hex_conf)
+        TO.start,
+        block_to_slice(&TO).hex_conf(hex_conf)
     );
 
-    // let from = &mut BLOCK;
-    let to = Block::new();
+    // let from = &mut TO;
+    // let to = Block::new();
+    FROM = std::mem::replace(&mut TO, Block::new());
     let debug_trace_blocks = || {
         trace!(
             "  from@{:p}:\n{:x?}",
-            BLOCK.start,
-            block_to_slice(&BLOCK).hex_conf(hex_conf)
+            FROM.start,
+            block_to_slice(&FROM).hex_conf(hex_conf)
         );
         trace!(
             "  to  @{:p}:\n{:x?}",
-            to.start,
-            block_to_slice(&to).hex_conf(hex_conf)
+            TO.start,
+            block_to_slice(&TO).hex_conf(hex_conf)
         );
     };
 
     // trace_gcroots();
-
-    // Returns `false` if pointer wasn't traced (null or unmanaged);
-    let trace_ptr = |ptr_loc: *mut AnyPtrMut| {
-        let span = tracing::trace_span!("trace_ptr", "{:p}", ptr_loc);
-        let _guard = span.enter();
-
-        trace!(
-            "{:p} -> {:p}",
-            ptr_loc,
-            if ptr_loc.is_null() {
-                std::ptr::null()
-            } else {
-                *ptr_loc
-            },
-        );
-        let ptr = *ptr_loc;
-        if ptr.is_null() {
-            return false;
-        }
-        debug_trace_ptr(ptr);
-        // BLOCK.end is inclusive because ptr can be zero-sized object.
-        if (ptr as *const u8) < BLOCK.start || (ptr as *const u8) > BLOCK.end {
-            // Not in the from block — likely a permanent object.
-            trace!("<- unmanaged");
-            return false;
-        }
-
-        let ty = get_typetag(ptr);
-        trace!("ty: {:p}", ty);
-
-        *ptr_loc = if (ty as usize) & 0x1 == 0x1 {
-            // moved out
-            let new = ((ty as usize) & !0x1) as AnyPtrMut;
-            trace!("moved out: {:p} -> {:p}", ptr, new);
-            new
-        } else {
-            let size = data_size(ptr);
-            let new = to.bump(size + 8 /* typetag */).unwrap().add(8) as AnyPtrMut;
-            trace!(
-                "copying: {:p} -> {:p} (ty={:p}, size={})",
-                ptr,
-                new,
-                ty,
-                size
-            );
-
-            set_typetag(new, ty);
-            set_typetag(ptr, ((new as usize) | 0x1) as *const DataType); // mark it as moved out
-            std::ptr::copy_nonoverlapping(ptr as *const u8, new as *mut u8, size);
-            new
-        };
-
-        debug_assert!(
-            (*ptr_loc as *const u8) >= to.start && (*ptr_loc as *const u8) <= to.end,
-            "{:p} should be inside to region: [{:p}, {:p}]",
-            *ptr_loc,
-            to.start,
-            to.end
-        );
-        true
-    };
-
-    let trace_value = |ptr: AnyPtrMut| {
-        let span = tracing::trace_span!("trace_value", "{:p}", ptr);
-        let _guard = span.enter();
-
-        if ptr.is_null() {
-            return;
-        }
-        let ty = get_typetag(ptr);
-        trace!("tracing: {:p} (ty={:p})", ptr, ty);
-        if ty == SYMBOL_T.load() {
-            // trace!("tracing as symbol");
-            // SymbolNode::trace_pointers(ptr as _, trace_ptr);
-
-            // Symbols are always perm-allocated and do not need to be traced.
-        } else if ty == SVEC_T.load() {
-            trace!("tracing as svec");
-            SVec::trace_pointers(ptr as _, trace_ptr);
-        } else {
-            // trace generic DataType
-            let ptr_offsets = (*ty).pointers();
-            if ((*ty).name.node as *const _ as *const u8).is_null() {
-                trace!(
-                    "tracing as generic DataType {:?}, ptrs={:?}",
-                    std::slice::from_raw_parts(ty as *const u8, DataType::size(ty)).hex_conf(
-                        HexConfig {
-                            title: false,
-                            width: 0,
-                            ..hex_conf
-                        }
-                    ),
-                    ptr_offsets
-                );
-            } else {
-                trace!("tracing as generic {:?}, ptrs={:?}", *ty, ptr_offsets);
-            }
-            for offset in ptr_offsets {
-                let field = ptr.cast::<u8>().add(*offset).cast::<AnyPtrMut>();
-                trace_ptr(field);
-            }
-        }
-    };
 
     {
         let span = tracing::trace_span!("trace_globals");
@@ -594,25 +470,6 @@ pub unsafe fn collect_garbage() {
 
     trace!("after globals");
     debug_trace_blocks();
-
-    // {
-    //     let span = tracing::trace_span!("trace_roots");
-    //     let _guard = span.enter();
-
-    //     let mut cur = GC_ROOTS;
-    //     while !cur.is_null() {
-    //         for root in (*cur).roots.iter() {
-    //             let root: &AtomicPtr<()> = *root;
-    //             static_assertions::assert_eq_size!(AtomicPtr<()>, *mut ());
-    //             let root = (root as *const AtomicPtr<()> as *mut AtomicPtr<()>).cast::<AnyPtrMut>();
-    //             // This is stated in the AtomicPtr doc, but good to re-check.
-    //             if !trace_ptr(root) {
-    //                 trace_value(*root);
-    //             }
-    //         }
-    //         cur = (*cur).prev;
-    //     }
-    // }
 
     {
         let span = tracing::trace_span!("llvm_gc_root_chain");
@@ -632,8 +489,8 @@ pub unsafe fn collect_garbage() {
     trace!("after roots");
     debug_trace_blocks();
 
-    let mut cur = to.start;
-    while cur < to.cur.load(Ordering::Relaxed) {
+    let mut cur = TO.start;
+    while cur < TO.cur.load(Ordering::Relaxed) {
         cur = cur.add(8); // skip typetag
 
         let span = tracing::trace_span!("traverse_to", "{:p}", cur);
@@ -648,27 +505,133 @@ pub unsafe fn collect_garbage() {
 
     trace!("after traverse");
     debug_trace_blocks();
-    PREV = std::mem::replace(&mut BLOCK, to);
-    PREV.protect();
+    FROM.protect();
 }
 
-static mut TRACED_PTRS: Lazy<Mutex<HashSet<AnyPtr>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+/// Returns `false` if pointer wasn't traced (null or unmanaged);
+#[tracing::instrument]
+unsafe fn trace_ptr(ptr_loc: *mut AnyPtrMut) -> bool {
+    trace!(
+        "{:p} -> {:p}",
+        ptr_loc,
+        if ptr_loc.is_null() {
+            std::ptr::null()
+        } else {
+            *ptr_loc
+        },
+    );
+    let ptr = *ptr_loc;
+    if ptr.is_null() {
+        return false;
+    }
+    debug_trace_ptr(ptr);
+    // FROM.end is inclusive because ptr can be zero-sized object.
+    if (ptr as *const u8) < FROM.start || (ptr as *const u8) > FROM.end {
+        // Not in the from block — likely a permanent object.
+        trace!("<- unmanaged");
+        return false;
+    }
 
+    let ty = get_typetag(ptr);
+    trace!("ty: {:p}", ty);
+
+    *ptr_loc = if (ty as usize) & 0x1 == 0x1 {
+        // moved out
+        let new = ((ty as usize) & !0x1) as AnyPtrMut;
+        trace!("moved out: {:p} -> {:p}", ptr, new);
+        new
+    } else {
+        let size = data_size(ptr);
+        let new = TO.bump(size + 8 /* typetag */).unwrap().add(8) as AnyPtrMut;
+        trace!(
+            "copying: {:p} -> {:p} (ty={:p}, size={})",
+            ptr,
+            new,
+            ty,
+            size
+        );
+
+        set_typetag(new, ty);
+        set_typetag(ptr, ((new as usize) | 0x1) as *const DataType); // mark it as moved out
+        std::ptr::copy_nonoverlapping(ptr as *const u8, new as *mut u8, size);
+        new
+    };
+
+    debug_assert!(
+        (*ptr_loc as *const u8) > TO.start && (*ptr_loc as *const u8) <= TO.end,
+        "{:p} should be inside the TO region: [{:p}, {:p}]",
+        *ptr_loc,
+        TO.start,
+        TO.end
+    );
+    true
+}
+
+#[tracing::instrument]
+unsafe fn trace_value(ptr: *mut AlphaValue) {
+    if ptr.is_null() {
+        return;
+    }
+
+    (*ptr).trace_pointers(trace_ptr);
+
+    // let ty = get_typetag(ptr);
+    // trace!("tracing: {:p} (ty={:p})", ptr, ty);
+    // if ty == SYMBOL_T.load() {
+    //     // trace!("tracing as symbol");
+    //     // SymbolNode::trace_pointers(ptr as _, trace_ptr);
+
+    //     // Symbols are always perm-allocated and do not need to be traced.
+    // } else if ty == SVEC_T.load() {
+    //     trace!("tracing as svec");
+    //     SVec::trace_pointers(ptr as _, trace_ptr);
+    // } else {
+    //     // trace generic DataType
+    //     let ptr_offsets = (*ty).pointers();
+    //     if ((*ty).name.node as *const _ as *const u8).is_null() {
+    //         trace!(
+    //             "tracing as generic DataType {:?}, ptrs={:?}",
+    //             std::slice::from_raw_parts(ty as *const u8, (*ty).size()).hex_conf(HexConfig {
+    //                 title: false,
+    //                 width: 0,
+    //                 ..hex_conf
+    //             }),
+    //             ptr_offsets
+    //         );
+    //     } else {
+    //         trace!("tracing as generic {:?}, ptrs={:?}", *ty, ptr_offsets);
+    //     }
+    //     for offset in ptr_offsets {
+    //         let field = ptr.cast::<u8>().add(*offset).cast::<AnyPtrMut>();
+    //         trace_ptr(field);
+    //     }
+    // }
+}
+
+#[cfg(feature = "gc_debug")]
+static mut TRACED_PTRS: once_cell::sync::Lazy<Mutex<HashSet<AnyPtr>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashSet::new()));
+
+#[cfg(feature = "gc_debug")]
 unsafe fn debug_trace_ptr(ptr: AnyPtr) {
     if ptr.is_null() {
         return;
     }
 
-    if log::log_enabled!(log::Level::Trace) {
-        let mut traced_ptrs = TRACED_PTRS.lock().unwrap();
-        if !traced_ptrs.contains(&ptr) {
-            debug_ptr(ptr);
+    let mut traced_ptrs = TRACED_PTRS.lock().unwrap();
+    if !traced_ptrs.contains(&ptr) {
+        debug_ptr(ptr);
 
-            traced_ptrs.insert(ptr);
-        }
+        traced_ptrs.insert(ptr);
     }
 }
+#[cfg(not(feature = "gc_debug"))]
+unsafe fn debug_trace_ptr(_ptr: AnyPtr) {}
 
+#[cfg(not(feature = "gc_debug"))]
+pub unsafe fn debug_ptr(_ptr: AnyPtr) {}
+// TODO: convert this into a type wrapper that gets typetag and applies the appropriate format.
+#[cfg(feature = "gc_debug")]
 #[tracing::instrument]
 pub unsafe fn debug_ptr(ptr: AnyPtr) {
     if ptr.is_null() {
@@ -701,21 +664,8 @@ pub unsafe fn debug_ptr(ptr: AnyPtr) {
             return;
         }
         trace!(target: "alpha::gc::debug_value", "{:?}", *ptr);
-    } else if ty == TYPE_T.load() {
-        trace!(target: "alpha::gc::debug_value", "{:?}", *ptr.cast::<Type>());
-    } else if ty == SYMBOL_T.load() {
-        trace!(target: "alpha::gc::debug_value", "Symbol {:?}", *ptr.cast::<SymbolNode>());
-    } else if ty == SVEC_T.load() {
-        trace!(target: "alpha::gc::debug_value", "SVec {:?}", *ptr.cast::<SVec>());
-    } else if ty == VOID_T.load() {
-        trace!(target: "alpha::gc::debug_value", "{:?}", *ptr.cast::<Void>());
-    } else if ty == METHOD_T.load() {
-        trace!(target: "alpha::gc::debug_value", "{:?}", *ptr.cast::<Method>());
-    } else if ty == STRING_T.load() {
-        trace!(target: "alpha::gc::debug_value", "AlphaString {:?}", *ptr.cast::<AlphaString>());
     } else {
-        let size = data_size(ptr);
-        trace!(target: "alpha::gc::debug_value", "ty={:p} generic {:?}, {:?}", ty, *ty, std::slice::from_raw_parts(ptr.cast::<u8>(), size).hex_dump());
+        trace!(target: "alpha::gc::debug_value", "{:?}", *ptr);
     }
 }
 
@@ -783,8 +733,8 @@ mod tests {
     fn datatype_new() {
         crate::types::init();
         unsafe {
-            let ty = DataType::new(symbol("TestDataType"), ANY_T.load(), 0, &[]);
-            gc_box!(ty);
+            let _ty = DataType::new(symbol("TestDataType"), ANY_T.load(), 0, &[]);
+            gc_box!(_ty);
             collect_garbage();
         }
     }

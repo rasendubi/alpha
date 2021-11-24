@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use log::error;
+use tracing::error;
 
 use llvm::builder::Builder;
 use llvm::context::Context;
@@ -10,12 +10,11 @@ use llvm::values::Value;
 
 use simple_error::{bail, simple_error};
 
+use crate::ast::exp::{self, Exp};
+use crate::ast::types::{TypeDef, TypeDescriptor};
 use crate::env::Env;
 use crate::execution_session::EnvValue;
-use crate::exp;
-use crate::exp::Exp;
 use crate::symbol;
-use crate::types::{AlphaType, AlphaTypeDef};
 
 pub struct Compiler<'a, 'ctx> {
     context: &'ctx Context,
@@ -69,7 +68,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         context: &'ctx Context,
         module: &'a Module,
         env: &'a Env<'a, EnvValue>,
-        def: &AlphaType,
+        def: &TypeDef,
     ) -> Result<Value, Box<dyn Error>> {
         let mut compiler = Compiler {
             context,
@@ -87,7 +86,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         context: &'ctx Context,
         module: &'a Module,
         env: &'a Env<'a, EnvValue>,
-        def: &AlphaType,
+        def: &TypeDef,
         i: usize,
         name: &str,
     ) -> Result<Value, Box<dyn Error>> {
@@ -186,9 +185,9 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         self.builder.build_store(typetag_ptr, tag);
     }
 
-    fn compile_constr(&mut self, def: &AlphaType) -> Result<Value, Box<dyn Error>> {
+    fn compile_constr(&mut self, def: &TypeDef) -> Result<Value, Box<dyn Error>> {
         let fields = match &def.typedef {
-            AlphaTypeDef::Struct { fields } => fields,
+            TypeDescriptor::Struct { fields } => fields,
             _ => panic!("Compiler::compile_constr() called on non-struct"),
         };
 
@@ -258,12 +257,12 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
     fn compile_access(
         &mut self,
-        def: &AlphaType,
+        def: &TypeDef,
         i: usize,
         name: &str,
     ) -> Result<Value, Box<dyn Error>> {
         let fields = match &def.typedef {
-            AlphaTypeDef::Struct { fields } => fields,
+            TypeDescriptor::Struct { fields } => fields,
             _ => panic!("Compiler::compile_constr() called on non-struct"),
         };
 

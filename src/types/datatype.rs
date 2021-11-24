@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use log::trace;
+use tracing::trace;
 
 use crate::gc_box;
 use crate::types::*;
@@ -140,7 +140,7 @@ impl DataType {
     }
 }
 
-impl AlphaValue for DataType {
+impl AlphaType for DataType {
     fn typetag() -> *const DataType {
         DATATYPE_T.load()
     }
@@ -152,14 +152,9 @@ impl AlphaValue for DataType {
             is_abstract: false,
             size: size_of::<DataType>() + 3 * size_of::<usize>(),
             methods: SVEC_EMPTY.load(),
-            n_ptrs: <Self as AlphaValue>::pointers().len(),
+            n_ptrs: <Self as AlphaType>::pointers().len(),
             pointers: [],
         }
-    }
-
-    fn size(ptr: *const Self) -> usize {
-        // note that this should return the size of the DataType itself.
-        unsafe { std::mem::size_of::<Self>() + (*ptr).n_ptrs * size_of::<usize>() }
     }
 
     fn pointers() -> &'static [usize] {
@@ -170,5 +165,12 @@ impl AlphaValue for DataType {
             4 * 8, // methods
         ];
         &PTRS
+    }
+}
+
+impl AlphaDataType for DataType {
+    fn size(&self) -> usize {
+        // note that this should return the size of the DataType itself.
+        std::mem::size_of::<Self>() + self.n_ptrs * size_of::<usize>()
     }
 }

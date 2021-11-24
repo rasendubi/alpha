@@ -22,7 +22,8 @@ impl Type {
         this
     }
 }
-impl AlphaValue for Type {
+
+impl AlphaType for Type {
     fn typetag() -> *const DataType {
         TYPE_T.load()
     }
@@ -37,13 +38,16 @@ impl AlphaValue for Type {
             pointers: [],
         }
     }
-    fn size(_ptr: *const Self) -> usize {
-        std::mem::size_of::<Type>()
-    }
     fn pointers() -> &'static [usize] {
         static PTRS: [usize; 1] = [
             0, // t
         ];
         &PTRS
+    }
+}
+
+impl AlphaDataType for Type {
+    fn size(&self) -> usize {
+        std::mem::size_of::<Type>()
     }
 }

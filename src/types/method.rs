@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use log::trace;
+use tracing::trace;
 
 use crate::gc_box;
 use crate::types::*;
@@ -34,7 +34,8 @@ impl Method {
         this
     }
 }
-impl AlphaValue for Method {
+
+impl AlphaType for Method {
     fn typetag() -> *const DataType {
         METHOD_T.load()
     }
@@ -49,16 +50,17 @@ impl AlphaValue for Method {
             pointers: [],
         }
     }
-
-    fn size(_ptr: *const Self) -> usize {
-        size_of::<Self>()
-    }
-
     fn pointers() -> &'static [usize] {
         static PTRS: [usize; 1] = [
             0 * 8, // signature
         ];
         &PTRS
+    }
+}
+
+impl AlphaDataType for Method {
+    fn size(&self) -> usize {
+        size_of::<Self>()
     }
 }
 

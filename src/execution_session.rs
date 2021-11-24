@@ -3,9 +3,9 @@ use std::error::Error;
 use std::io::Write;
 use std::sync::Mutex;
 
-use log::{error, trace};
-
+use once_cell::sync::Lazy;
 use simple_error::simple_error;
+use tracing::{error, trace};
 
 use llvm::module::Module;
 use llvm::orc::lljit::{LLJITBuilder, ResourceTracker, LLJIT};
@@ -13,18 +13,17 @@ use llvm::orc::thread_safe::ThreadSafeContext;
 use llvm::types::{AddressSpace, Type as LLVMType};
 use llvm::values::{LLVMLinkage, Value};
 
+use crate::ast::exp::{self, lower_sexp, Exp};
+use crate::ast::parser::Parser;
+use crate::ast::types::{TypeDef, TypeDescriptor};
 use crate::compiler::Compiler;
 use crate::env::Env;
-use crate::exp;
-use crate::exp::{lower_sexp, Exp};
-use crate::gc;
-use crate::gc::{GcRoot, GcRootChain, GC_ROOT_CHAIN};
+use crate::gc::{self, GcRoot, GcRootChain, GC_ROOT_CHAIN};
 use crate::gc_box;
-use crate::parser::Parser;
 use crate::types::*;
 
-#[ctor::ctor]
-static STDOUT: Mutex<Box<dyn Write + Sync + Send>> = Mutex::new(Box::new(std::io::stdout()));
+static STDOUT: Lazy<Mutex<Box<dyn Write + Sync + Send>>> =
+    Lazy::new(|| Mutex::new(Box::new(std::io::stdout())));
 
 pub fn set_stdout(out: Box<dyn Write + Sync + Send>) {
     let mut stdout = STDOUT.lock().unwrap();
@@ -50,7 +49,7 @@ unsafe extern "C" fn mk_str(p: *const u8, len: u64) -> AnyPtr {
 }
 
 unsafe fn type_of(x: AnyPtr) -> *const DataType {
-    let result = *x.sub(1) as *const DataType;
+    let result = *(x as *const *const DataType).sub(1);
     // println!("type_of({:p}) = {:p} (typetag @ {:p})", x, result, x.sub(1));
     result
 }
@@ -231,7 +230,7 @@ pub struct ExecutionSession<'ctx> {
     global_gc_roots: HashSet<GcRoot<'static, u8>>,
     jit: LLJIT,
     global_env: Env<'ctx, EnvValue>,
-    types: Env<'ctx, AlphaType>,
+    types: Env<'ctx, TypeDef>,
     // Context should be the last field, so that other fields (globals, jit) are disposed _before_
     // module is disposed.
     context: ThreadSafeContext,
@@ -320,65 +319,65 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         self.types.insert(
             symbol("Any"),
-            AlphaType {
+            TypeDef {
                 name: symbol("Any"),
                 supertype: symbol("Any"),
-                typedef: AlphaTypeDef::Abstract,
+                typedef: TypeDescriptor::Abstract,
             },
         );
 
-        let i64_typedef = AlphaType {
+        let i64_typedef = TypeDef {
             name: symbol("i64"),
             supertype: symbol("Any"),
-            typedef: AlphaTypeDef::Int(64),
+            typedef: TypeDescriptor::Int(64),
         };
         self.build_type_specifier(&i64_typedef)?;
         self.types.insert(symbol("i64"), i64_typedef);
 
-        let f64_typedef = AlphaType {
+        let f64_typedef = TypeDef {
             name: symbol("f64"),
             supertype: symbol("Any"),
-            typedef: AlphaTypeDef::Float(64),
+            typedef: TypeDescriptor::Float(64),
         };
         self.build_type_specifier(&f64_typedef)?;
         self.types.insert(symbol("f64"), f64_typedef);
 
-        let void_typedef = AlphaType {
+        let void_typedef = TypeDef {
             name: symbol("Void"),
             supertype: symbol("Any"),
-            typedef: AlphaTypeDef::Struct { fields: vec![] },
+            typedef: TypeDescriptor::Struct { fields: vec![] },
         };
         let void_t = self.build_type_specifier(&void_typedef)?;
-        let datatype_typedef = AlphaType {
+        let datatype_typedef = TypeDef {
             name: symbol("DataType"),
             supertype: symbol("Any"),
-            typedef: AlphaTypeDef::Struct {
+            typedef: TypeDescriptor::Struct {
                 fields: vec![
                     // TODO:
                     // (symbol("supertype"), abstracttype_typedef.clone()),
                     // (
                     //     symbol("size"),
-                    //     AlphaType {
+                    //     TypeDef {
                     //         name: symbol("i64"),
                     //         supertype: symbol("Number"),
-                    //         typedef: AlphaTypeDef::Int(64),
+                    //         typedef: TypeDescriptor::Int(64),
                     //     },
                     // ),
                     // (
                     //     symbol("n_ptrs"),
-                    //     AlphaType {
+                    //     TypeDef {
                     //         name: symbol("i64"),
                     //         supertype: symbol("Number"),
-                    //         typedef: AlphaTypeDef::Int(64),
+                    //         typedef: TypeDescriptor::Int(64),
                     //     },
                     // ),
                     // (
                     //     symbol("methods"),
-                    //     AlphaType {
+                    //     TypeDef {
                     //         // actually: pointer to Vec<Method>
                     //         name: symbol("i64"),
                     //         supertype: symbol("Number"),
-                    //         typedef: AlphaTypeDef::Int(64),
+                    //         typedef: TypeDescriptor::Int(64),
                     //     },
                     // ),
                 ],
@@ -585,7 +584,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn eval_exp(&mut self, exp: Exp) -> Result<(), Box<dyn Error>> {
         match exp {
             Exp::Type(t) => {
-                let alpha_type = AlphaType::from_exp(&t, &self.types)?;
+                let alpha_type = TypeDef::from_exp(&t, &self.types)?;
                 self.eval_type(&alpha_type)?;
             }
             Exp::Function(f) => self.eval_function_definition(f)?,
@@ -595,7 +594,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     // Build a global type binding and initialize it. This does not execute any code inside the JIT.
-    fn eval_type(&mut self, alpha_type: &AlphaType) -> Result<*const DataType, Box<dyn Error>> {
+    fn eval_type(&mut self, alpha_type: &TypeDef) -> Result<*const DataType, Box<dyn Error>> {
         trace!("type lowered to {:?}", alpha_type);
 
         let name = alpha_type.name;
@@ -619,7 +618,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         gc_box!(supertype);
         // TODO: verify the supertype is abstract
 
-        let type_ptr = if alpha_type.typedef == AlphaTypeDef::Abstract {
+        let type_ptr = if alpha_type.typedef == TypeDescriptor::Abstract {
             unsafe { DataType::new_abstract(name, supertype.load()) }
         } else {
             let type_size = alpha_type
@@ -653,7 +652,7 @@ impl<'ctx> ExecutionSession<'ctx> {
             self.register_gc_root(type_ptr_place);
         }
 
-        if alpha_type.typedef != AlphaTypeDef::Abstract {
+        if alpha_type.typedef != TypeDescriptor::Abstract {
             let t = self.build_type_specifier(&alpha_type)?;
             trace!(
                 "defined type: {} size={:?}, n_ptrs={:?}, is_inlinable={}, has_ptrs={}, is_ptr={}",
@@ -665,7 +664,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                 alpha_type.typedef.is_ptr(),
             );
 
-            if let AlphaTypeDef::Struct { .. } = alpha_type.typedef {
+            if let TypeDescriptor::Struct { .. } = alpha_type.typedef {
                 self.build_constructor(type_ptr.load(), &alpha_type)?;
                 self.build_accessors(type_ptr.load(), &alpha_type)?;
             }
@@ -675,11 +674,11 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     /// Build LLVM IR type for `type_`.
-    fn build_type_specifier(&mut self, type_: &AlphaType) -> Result<LLVMType, Box<dyn Error>> {
+    fn build_type_specifier(&mut self, type_: &TypeDef) -> Result<LLVMType, Box<dyn Error>> {
         let name = type_.name.as_str();
         let t = match &type_.typedef {
-            AlphaTypeDef::Abstract => panic!("build_type_specifier is called for Abstract type"),
-            AlphaTypeDef::Int(size) => {
+            TypeDescriptor::Abstract => panic!("build_type_specifier is called for Abstract type"),
+            TypeDescriptor::Int(size) => {
                 let i = self.context.context().int_type(*size as u32);
                 let t = self
                     .context
@@ -688,7 +687,7 @@ impl<'ctx> ExecutionSession<'ctx> {
                     .struct_set_body(&[i], false);
                 t
             }
-            AlphaTypeDef::Float(size) => {
+            TypeDescriptor::Float(size) => {
                 let i = self.context.context().float_type(*size as u32);
                 let t = self
                     .context
@@ -697,12 +696,12 @@ impl<'ctx> ExecutionSession<'ctx> {
                     .struct_set_body(&[i], false);
                 t
             }
-            AlphaTypeDef::Struct { fields } => {
+            TypeDescriptor::Struct { fields } => {
                 let v = fields
                     .iter()
                     .map(|(_name, type_)| {
                         let name = type_.name.as_str();
-                        if type_.typedef == AlphaTypeDef::Abstract {
+                        if type_.typedef == TypeDescriptor::Abstract {
                             // Even though typ can be more concrete than Any, we still define the
                             // field as %Any* in LLVM. %Any in LLVM IR means that specific DataType
                             // is unknown.
@@ -737,12 +736,12 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn build_constructor(
         &mut self,
         type_ptr: *const DataType,
-        def: &AlphaType,
+        def: &TypeDef,
     ) -> Result<(), Box<dyn Error>> {
         gc_box!(type_ptr);
 
         let fields = match &def.typedef {
-            AlphaTypeDef::Struct { fields } => fields,
+            TypeDescriptor::Struct { fields } => fields,
             _ => return Ok(()),
         };
 
@@ -784,11 +783,11 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn build_accessors(
         &mut self,
         type_ptr: *const DataType,
-        def: &AlphaType,
+        def: &TypeDef,
     ) -> Result<(), Box<dyn Error>> {
         gc_box!(type_ptr);
         let fields = match &def.typedef {
-            AlphaTypeDef::Struct { fields } => fields,
+            TypeDescriptor::Struct { fields } => fields,
             _ => return Ok(()),
         };
 
@@ -879,10 +878,10 @@ impl<'ctx> ExecutionSession<'ctx> {
     fn define_function_type(&mut self, fn_name: &str) -> Result<*const DataType, Box<dyn Error>> {
         let any_s = symbol("Any");
         let fn_t_name = symbol(&("fn_".to_string() + fn_name + "_t"));
-        let fn_t = self.eval_type(&AlphaType {
+        let fn_t = self.eval_type(&TypeDef {
             name: fn_t_name,
             supertype: any_s,
-            typedef: AlphaTypeDef::Struct { fields: Vec::new() },
+            typedef: TypeDescriptor::Struct { fields: Vec::new() },
         })?;
         Ok(fn_t)
     }

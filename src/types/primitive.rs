@@ -20,12 +20,10 @@ impl AlphaI64 {
         result
     }
 }
-
-impl AlphaValue for AlphaI64 {
+impl AlphaType for AlphaI64 {
     fn typetag() -> *const DataType {
         I64_T.load()
     }
-
     fn datatype() -> DataType {
         DataType {
             name: symbol("i64"),
@@ -33,9 +31,14 @@ impl AlphaValue for AlphaI64 {
             is_abstract: false,
             size: size_of::<Self>(),
             methods: SVEC_EMPTY.load(),
-            n_ptrs: <Self as AlphaValue>::pointers().len(),
+            n_ptrs: <Self as AlphaType>::pointers().len(),
             pointers: [],
         }
+    }
+}
+impl AlphaDataType for AlphaI64 {
+    fn size(&self) -> usize {
+        size_of::<Self>()
     }
 }
 
@@ -57,11 +60,10 @@ impl AlphaF64 {
     }
 }
 
-impl AlphaValue for AlphaF64 {
+impl AlphaType for AlphaF64 {
     fn typetag() -> *const DataType {
         F64_T.load()
     }
-
     fn datatype() -> DataType {
         DataType {
             name: symbol("f64"),
@@ -69,8 +71,13 @@ impl AlphaValue for AlphaF64 {
             is_abstract: false,
             size: size_of::<Self>(),
             methods: SVEC_EMPTY.load(),
-            n_ptrs: <Self as AlphaValue>::pointers().len(),
+            n_ptrs: <Self as AlphaType>::pointers().len(),
             pointers: [],
         }
+    }
+}
+impl AlphaDataType for AlphaF64 {
+    fn size(&self) -> usize {
+        size_of::<Self>()
     }
 }
