@@ -30,12 +30,11 @@ pub fn set_stdout(out: Box<dyn Write + Sync + Send>) {
     *stdout = out;
 }
 
-// Another option: libunwind provides this function
-unsafe extern "C" fn _unwind_resume() {
-    panic!("_Unwind_Resume");
-}
-unsafe extern "C" fn __gcc_personality_v0() {
-    panic!("__gcc_personality_v0");
+extern "C" {
+    // These seem to be provided by Rust runtime. Although I am not sure how much I should rely on
+    // them.
+    fn _Unwind_Resume();
+    fn __gcc_personality_v0();
 }
 
 unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
@@ -129,12 +128,32 @@ unsafe extern "C" fn alpha_print_datatype(_n_args: i64, args: *const AnyPtr) -> 
     let mut stdout = STDOUT.lock().unwrap();
     let x = &*(*args.add(1) as *const DataType);
     trace!("alpha_print_datatype({:?})", x);
-    write!(stdout, "{:#?}", x).unwrap();
+    write!(stdout, "{}", x).unwrap();
     VOID.load() as AnyPtr
 }
 
 #[tracing::instrument]
 unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
+    #[allow(unused_must_use)] // ignore write!() errors
+    fn format_signature(args_slice: &[*const AlphaValue]) -> String {
+        use std::fmt::Write;
+        let mut sig = String::new();
+
+        write!(sig, "[");
+        let mut first = true;
+        for arg in args_slice.iter() {
+            if !first {
+                write!(sig, ", ");
+            } else {
+                first = false;
+            }
+            write!(sig, "{}", unsafe { &*type_of(*arg) });
+        }
+        write!(sig, "]");
+
+        sig
+    }
+
     // trace!("LLVM_GC_ROOT_CHAIN: {:p}", GC_ROOT_CHAIN);
     // llvm::gc::shadow_stack::visit_roots(GC_ROOT_CHAIN, |ptr, _meta| {
     //     trace!("LLVM ROOT: {:p}", ptr);
@@ -171,15 +190,12 @@ unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
                     method
                 } else {
                     // Both methods are applicable but neither is more specific — ambiguity.
-                    // let args_cpls = args_slice
-                    //     .iter()
-                    //     .map(|x| get_cpl(type_of(*x)))
-                    //     .collect::<Vec<_>>();
-                    let signature = args_slice.iter().map(|a| type_of(*a)).collect::<Vec<_>>();
-                    error!("ambiguity finding matching method for: {:?}", signature);
-                    error!("available methods: {:?}", methods);
-                    // error!("cpls: {:?}", args_cpls);
-                    panic!("ambiguity! between {:?} and {:?}", current, method);
+                    error!(
+                        "ambiguity finding matching method for signature: {}",
+                        &format_signature(args_slice)
+                    );
+                    error!("available methods: {}", methods);
+                    panic!("ambiguity! between {} and {}", current, method);
                 }
             }
         });
@@ -191,14 +207,11 @@ unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
             (method.instance)(n_args, args)
         }
         None => {
-            // let args_cpls = args_slice
-            //     .iter()
-            //     .map(|x| get_cpl(type_of(*x)))
-            //     .collect::<Vec<_>>();
-            let signature = args_slice.iter().map(|a| type_of(*a)).collect::<Vec<_>>();
-            error!("unable to find matching method: {:?}", signature);
-            error!("available methods: {:?}", methods);
-            // error!("cpls: {:?}", args_cpls);
+            error!(
+                "unable to find matching method for: {}",
+                &format_signature(args_slice)
+            );
+            error!("available methods: {}", methods);
             panic!("unable to find matching method");
         }
     }
@@ -310,7 +323,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let datatype_ptr_t = datatype_t.pointer_type(AddressSpace::Generic);
 
         self.jit
-            .define_symbol("_Unwind_Resume", _unwind_resume as usize)?;
+            .define_symbol("_Unwind_Resume", _Unwind_Resume as usize)?;
         self.jit
             .define_symbol("__gcc_personality_v0", __gcc_personality_v0 as usize)?;
         self.jit.define_symbol("llvm_gc_root_chain", unsafe {
@@ -753,7 +766,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_module(module)?;
 
         let constructor_code = self.jit.lookup::<GenericFn>(&name)?;
-        let t = unsafe { Type::new(type_ptr.load()) };
+        let t = unsafe { Type::new(type_ptr.load().cast()) };
         gc_box!(t);
         let signature = std::iter::once(t.load() as AnyPtr)
             .chain(fields.iter().map(|(_name, type_)| {
@@ -810,12 +823,12 @@ impl<'ctx> ExecutionSession<'ctx> {
 
             let fn_obj = self.ensure_function(*name)?;
             gc_box!(fn_obj);
-            let t = unsafe { Type::new(fn_obj.load() as *const DataType) };
-            gc_box!(t);
-            let signature = unsafe { SVec::new(&[t.load().cast(), type_ptr.load().cast()]) };
+            let signature = unsafe { SVec::new(&[ANY_T.load().cast(), type_ptr.load().cast()]) };
             let method = unsafe { Method::new(signature, instance) };
-            gc_box!(method);
-            self.function_add_method(fn_obj.load(), method.load());
+
+            unsafe {
+                DataType::add_method(type_of(fn_obj.load()) as *mut _, method);
+            }
         }
 
         Ok(())
@@ -830,6 +843,7 @@ impl<'ctx> ExecutionSession<'ctx> {
 
         let fn_obj = self.ensure_function(fn_name_s)?;
         gc_box!(fn_obj);
+        trace!("fn_obj: {:?}", unsafe { &*fn_obj.load() });
 
         // compile method
         let module = self.new_module(&method_name);
@@ -839,8 +853,16 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_module(module)?;
         let instance = self.jit.lookup::<GenericFn>(instance_fn_name)?;
 
-        let t = unsafe { Type::new(fn_obj.load().cast()) };
-        let signature = std::iter::once(t.cast())
+        let fn_t = unsafe { get_typetag(fn_obj.load()) };
+        gc_box!(fn_t);
+        let ps0: AnyPtr = if fn_t.load() == DATATYPE_T.load() {
+            // fn_obj is a DataType. This means the user is defining a constructor, so the first
+            // param specifier must be specialized to only fire on this specific DataType, not Any.
+            unsafe { Type::new(fn_obj.load().cast()) }.cast()
+        } else {
+            ANY_T.load().cast()
+        };
+        let signature = std::iter::once(ps0.cast())
             .chain(def.prototype.params.iter().map(|p| {
                 let llvm_name = match self.global_env.lookup(p.typ) {
                     Some(EnvValue::Global(s)) => s,
@@ -851,7 +873,10 @@ impl<'ctx> ExecutionSession<'ctx> {
             .collect::<Vec<_>>();
         let signature = unsafe { SVec::new(&signature) };
         let method = unsafe { Method::new(signature, instance) };
-        self.function_add_method(fn_obj.load(), method);
+
+        unsafe {
+            DataType::add_method(fn_t.load() as *mut _, method);
+        }
 
         Ok(())
     }

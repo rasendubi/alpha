@@ -27,3 +27,10 @@ impl AlphaDataType for Void {
         0
     }
 }
+
+impl std::fmt::Display for Void {
+    fn fmt(&self, _f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        // print nothing
+        Ok(())
+    }
+}

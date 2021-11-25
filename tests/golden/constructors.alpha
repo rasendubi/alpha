@@ -1,0 +1,15 @@
+# Test that constructors do not overlap
+
+type X = { x, y }
+
+type Y = { x, y }
+
+fn print(x: X) = "X"
+fn print(y: Y) = "Y"
+
+X(1, 2).print()
+Y(1, 2).print()
+
+# expected stdout:
+# X
+# Y

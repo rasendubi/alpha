@@ -25,12 +25,21 @@ impl DataType {
     /// # Safety
     /// This function allocates GC memory. Therefore all GC values must be rooted before calling
     /// this function.
+    #[tracing::instrument("DataType::new")]
     pub unsafe fn new(
         name: Symbol,
         supertype: *const DataType,
         size: usize,
         ptrs: &[usize],
     ) -> *const DataType {
+        trace!(
+            "DataType::new(name={:?}, supertype={:?}, size={:?}, ptrs={:?})",
+            name,
+            &*supertype,
+            size,
+            ptrs
+        );
+
         gc_box!(supertype);
         let this = Self::allocate(ptrs.len());
         *this = DataType {
@@ -172,5 +181,12 @@ impl AlphaDataType for DataType {
     fn size(&self) -> usize {
         // note that this should return the size of the DataType itself.
         std::mem::size_of::<Self>() + self.n_ptrs * size_of::<usize>()
+    }
+}
+
+impl std::fmt::Display for DataType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        assert_ne!(self as *const Self, std::ptr::null());
+        write!(f, "{}", self.name.as_str())
     }
 }

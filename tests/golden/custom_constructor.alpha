@@ -1,0 +1,19 @@
+type Rect = { height, width }
+
+fn print(r: Rect) = {
+  print(r.height)
+  print("x")
+  print(r.width)
+}
+
+fn Rect(x) = Rect(x, x)
+fn Rect() = Rect(0, 0)
+
+Rect(2, 3).print()
+Rect(13).print()
+Rect().print()
+
+# expected stdout:
+# 2x3
+# 13x13
+# 0x0

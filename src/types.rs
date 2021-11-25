@@ -45,7 +45,7 @@ pub trait AlphaType {
 }
 
 /// AlphaDataType are types that can occur in GC-managed memory.
-pub trait AlphaDataType: std::fmt::Debug {
+pub trait AlphaDataType: std::fmt::Debug + std::fmt::Display {
     fn size(&self) -> usize;
 
     fn trace_pointers(&mut self, trace_ptr: unsafe fn(*mut AnyPtrMut) -> bool) {

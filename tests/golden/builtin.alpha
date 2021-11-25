@@ -1,0 +1,15 @@
+f64_mul(2.25, 4.5).print()
+i64_mul(13, 2).print()
+
+type_of(2).print()
+type_of(0.0).print()
+type_of(DataType).print()
+type_of(Any).print()
+
+# expected stdout:
+# 10.125
+# 26
+# i64
+# f64
+# DataType
+# DataType

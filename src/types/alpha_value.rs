@@ -97,7 +97,7 @@ impl std::fmt::Debug for AlphaValue {
         use pretty_hex::{HexConfig, PrettyHex};
 
         if let Some(datatype) = self.as_builtin_datatype() {
-            datatype.fmt(f)
+            std::fmt::Debug::fmt(&datatype, f)
         } else {
             unsafe {
                 let ty = self.get_type();
@@ -115,6 +115,19 @@ impl std::fmt::Debug for AlphaValue {
                         }),
                     )
                     .finish()
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for AlphaValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        if let Some(datatype) = self.as_builtin_datatype() {
+            std::fmt::Display::fmt(&datatype, f)
+        } else {
+            unsafe {
+                let ty = self.get_type();
+                write!(f, "<{}>", &*ty)
             }
         }
     }

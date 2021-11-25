@@ -42,6 +42,12 @@ impl AlphaDataType for AlphaI64 {
     }
 }
 
+impl std::fmt::Display for AlphaI64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.value)
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 #[repr(C)]
 pub struct AlphaF64 {
@@ -79,5 +85,11 @@ impl AlphaType for AlphaF64 {
 impl AlphaDataType for AlphaF64 {
     fn size(&self) -> usize {
         size_of::<Self>()
+    }
+}
+
+impl std::fmt::Display for AlphaF64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.value)
     }
 }

@@ -25,29 +25,29 @@ static SYMBOLS_ROOT: AtomicPtr<SymbolNode> = AtomicPtr::new(std::ptr::null_mut()
 // re-allocated.
 /// Return a [`Symbol`] associated with `name`.
 pub fn symbol(name: &str) -> Symbol {
-    let node = unsafe {
+    let node = {
         let res = SymbolNode::search(&SYMBOLS_ROOT, name);
         match res {
-            Ok(node) => &*node.load(AtomicOrdering::SeqCst),
+            Ok(node) => node.load(AtomicOrdering::SeqCst),
             Err(_place) => {
                 let _lock = SYMBOLS_MUTEX.lock().unwrap();
                 // We call search again because someone might have modified the tree between
                 // previous search and now.
                 let res = SymbolNode::search(&SYMBOLS_ROOT, name);
                 match res {
-                    Ok(node) => &*node.load(AtomicOrdering::SeqCst),
+                    Ok(node) => node.load(AtomicOrdering::SeqCst),
                     Err(place) => {
                         trace!("allocating symbol: {}", name);
                         let node = SymbolNode::allocate(name);
                         place.store(node as *mut _, AtomicOrdering::SeqCst);
-                        &*node
+                        node
                     }
                 }
             }
         }
     };
 
-    Symbol { node }
+    Symbol::new(node)
 }
 
 #[allow(unused)] // might be useful to debugging
@@ -72,23 +72,29 @@ fn dump_symbols() {
 }
 
 #[derive(Clone, Copy)]
-#[repr(C)]
+#[repr(transparent)]
 pub struct Symbol {
-    pub(crate) node: &'static SymbolNode,
+    pub(crate) node: *const SymbolNode,
 }
 
 impl Symbol {
+    fn new(node: *const SymbolNode) -> Self {
+        assert_ne!(node, std::ptr::null(), "Symbol::new: node is null");
+        Symbol { node }
+    }
+
     pub fn as_str(&self) -> &str {
-        self.node.as_str()
+        assert_ne!(self.node, std::ptr::null());
+        unsafe { (*self.node).as_str() }
     }
 
     #[allow(dead_code)]
     pub fn as_cstr(&self) -> &CStr {
-        self.node.as_cstr()
+        unsafe { (*self.node).as_cstr() }
     }
 
     pub fn as_anyptr(&self) -> AnyPtr {
-        self.node as *const SymbolNode as AnyPtr
+        self.node.cast()
     }
 }
 
@@ -105,18 +111,28 @@ impl Hash for Symbol {
     where
         H: std::hash::Hasher,
     {
-        hasher.write_u64(self.node.hash);
+        unsafe {
+            hasher.write_u64((*self.node).hash);
+        }
     }
 }
 
 impl std::fmt::Debug for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        write!(f, "#{}", self)
+        assert_ne!(self as *const Self, std::ptr::null());
+        assert_ne!(self.node, std::ptr::null(), "Symbol.node is null");
+        if self.node.is_null() {
+            Ok(())
+        } else {
+            write!(f, "#{}", self)
+        }
     }
 }
 
 impl std::fmt::Display for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        assert_ne!(self as *const Self, std::ptr::null());
+        assert_ne!(self.node, std::ptr::null(), "Symbol.node is null");
         write!(f, "{}", self.as_str())
     }
 }
@@ -133,12 +149,20 @@ pub struct SymbolNode {
 
 impl std::fmt::Debug for SymbolNode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        assert_ne!(self as *const Self, std::ptr::null());
         f.debug_struct("SymbolNode")
             .field("hash", &self.hash)
             .field("left", &self.left)
             .field("right", &self.right)
             .field("name", &self.name())
             .finish()
+    }
+}
+
+impl std::fmt::Display for SymbolNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        assert_ne!(self as *const Self, std::ptr::null());
+        write!(f, "{}", self.as_str())
     }
 }
 

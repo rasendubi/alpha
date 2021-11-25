@@ -5,7 +5,6 @@ use tracing::trace;
 use crate::gc_box;
 use crate::types::*;
 
-#[derive(Debug)]
 #[repr(C)]
 pub struct Method {
     /// Values can be either types (type=DataType) or a Type{T} (type=Type).
@@ -65,6 +64,7 @@ impl AlphaDataType for Method {
 }
 
 impl Method {
+    #[tracing::instrument]
     pub fn is_applicable(&self, args: &[AnyPtr]) -> bool {
         unsafe {
             if (*self.signature).len() != args.len() {
@@ -81,6 +81,7 @@ impl Method {
         }
     }
 
+    #[tracing::instrument]
     pub fn is_subtype_of(&self, other: &Self) -> bool {
         unsafe {
             // find an element that is strictly more specific
@@ -121,6 +122,7 @@ impl Method {
     }
 }
 
+#[tracing::instrument]
 pub(super) fn signature_equal(a_signature: *const SVec, b_signature: *const SVec) -> bool {
     debug_assert!(!a_signature.is_null());
     debug_assert!(!b_signature.is_null());
@@ -151,8 +153,9 @@ fn param_specifier_equal(a: AnyPtr, b: AnyPtr) -> bool {
     }
 }
 
+#[tracing::instrument]
 fn param_specifier_is_applicable(ps: AnyPtr, v: AnyPtr) -> bool {
-    unsafe {
+    let result = unsafe {
         let ps_kind = get_typetag(ps);
         if ps_kind == TYPE_T.load() {
             let t = ps as *const Type;
@@ -163,10 +166,19 @@ fn param_specifier_is_applicable(ps: AnyPtr, v: AnyPtr) -> bool {
         } else {
             panic!("wrong type for parameter specifier: {:?}", ps_kind);
         }
+    };
+    unsafe {
+        trace!(
+            "param_specifier_is_applicable({}, {}) = {}",
+            *ps,
+            *v,
+            result
+        );
     }
+    result
 }
 
-/// Returns `true` if `a` is more specific than `b`.
+/// Returns `true` if `a` is strictly more specific than `b`.
 fn param_specifier_is_more_specific(a: AnyPtr, b: AnyPtr) -> bool {
     unsafe {
         let a_kind = get_typetag(a);
@@ -178,7 +190,8 @@ fn param_specifier_is_more_specific(a: AnyPtr, b: AnyPtr) -> bool {
             false
         } else if a_kind == DATATYPE_T.load() && b_kind == DATATYPE_T.load() {
             let a_cpls = get_cpl(a as *const DataType);
-            a_cpls.contains(&b)
+            // Use offset 1 — they must not be the same type
+            a_cpls[1..].contains(&b)
         } else {
             panic!(
                 "wrong type for parameter specifiers: {:?} {:?}",
@@ -192,11 +205,68 @@ fn param_specifier_is_more_specific(a: AnyPtr, b: AnyPtr) -> bool {
 unsafe fn get_cpl(t: *const DataType) -> Vec<AnyPtr> {
     let mut cpl = Vec::new();
     cpl.push(t as AnyPtr);
-    let mut supertype = (*t).supertype;
-    cpl.push(supertype as AnyPtr);
-    while supertype != (*supertype).supertype {
-        supertype = (*supertype).supertype;
-        cpl.push(supertype as AnyPtr);
+    let mut ty = t;
+    while ty != (*ty).supertype {
+        ty = (*ty).supertype;
+        cpl.push(ty as AnyPtr);
     }
     cpl
+}
+
+impl std::fmt::Debug for Method {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        unsafe {
+            f.debug_struct("Method")
+                .field("signature", &(*self.signature))
+                .finish()
+        }
+    }
+}
+
+impl std::fmt::Display for Method {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        unsafe { write!(f, "Method{}", (*self.signature)) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_more_specific_any_any() {
+        crate::types::init();
+        assert!(!param_specifier_is_more_specific(
+            ANY_T.load() as *const AlphaValue,
+            ANY_T.load() as *const AlphaValue
+        ));
+    }
+
+    #[test]
+    fn test_more_specific_f64_any() {
+        crate::types::init();
+        assert!(param_specifier_is_more_specific(
+            F64_T.load() as *const AlphaValue,
+            ANY_T.load() as *const AlphaValue
+        ));
+    }
+
+    #[test]
+    fn test_more_specific_any_f64() {
+        crate::types::init();
+        assert!(!param_specifier_is_more_specific(
+            ANY_T.load().cast(),
+            F64_T.load().cast()
+        ));
+    }
+
+    #[test]
+    fn test_cpl_f64() {
+        crate::types::init();
+        unsafe {
+            let cpls = get_cpl(F64_T.load().cast());
+            assert_eq!(cpls[0], F64_T.load().cast());
+            assert_eq!(cpls[1], ANY_T.load().cast());
+        }
+    }
 }

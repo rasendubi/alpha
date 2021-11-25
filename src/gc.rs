@@ -112,8 +112,8 @@ impl Block {
 }
 impl Drop for Block {
     fn drop(&mut self) {
-        unsafe {
-            if !self.start.is_null() {
+        if !self.start.is_null() {
+            unsafe {
                 std::ptr::drop_in_place(self.allocation.as_mut_ptr());
             }
         }
@@ -469,11 +469,11 @@ mod tests {
         unsafe {
             let ty = DataType::new(symbol("TestDataType"), ANY_T.load(), 0, &[]);
             gc_box!(ty);
-            let t = Type::new(ty.load());
+            let t = Type::new(ty.load().cast());
             gc_box!(t);
             collect_garbage();
 
-            assert_eq!((*t.load()).t, ty.load());
+            assert_eq!((*t.load()).t, ty.load().cast());
         }
     }
 
@@ -484,11 +484,11 @@ mod tests {
         unsafe {
             let ty = DataType::new(symbol("TestDataType"), ANY_T.load(), 0, &[]);
             gc_box!(ty);
-            let t = Type::new(ty.load());
+            let t = Type::new(ty.load().cast());
             gc_box!(t);
             collect_garbage();
 
-            assert_eq!((*t.load()).t, ty.load());
+            assert_eq!((*t.load()).t, ty.load().cast());
 
             let signature = SVec::push(SVEC_EMPTY.load(), t.load().cast());
             gc_box!(signature);
@@ -503,7 +503,7 @@ mod tests {
             let method = (*methods).elements()[0].cast::<Method>();
             assert_eq!(method, m.load());
             assert_eq!((*(*method).signature).elements()[0], t.load().cast());
-            assert_eq!((*t.load()).t, ty.load());
+            assert_eq!((*t.load()).t, ty.load().cast());
         }
     }
 }

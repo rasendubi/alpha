@@ -23,11 +23,17 @@ impl SVec {
     #[tracing::instrument("SVec::new")]
     pub unsafe fn new(elements: &[AnyPtr]) -> *const Self {
         trace!("SVec::new({:?})", elements);
+        for (i, e) in elements.iter().enumerate() {
+            trace!("{} = @{:p}", i, *e);
+            trace!("{} = ty {:?}", i, &*get_typetag(*e));
+            trace!("{} = {:?}", i, &**e);
+        }
         gc::with_gc_box_slice(elements, |elements| {
             let this = Self::alloc(elements.len());
             let this = &mut *this;
             let new_elements = elements.iter().map(|x| x.ptr()).collect::<Vec<_>>();
             this.elements_mut().copy_from_slice(&new_elements);
+            trace!("allocated = {:?}", &*this);
             this
         })
     }
@@ -118,7 +124,26 @@ impl SVec {
 
 impl std::fmt::Debug for SVec {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        f.debug_tuple("SVec").field(&self.elements()).finish()
+        write!(f, "SVec ")?;
+        f.debug_list()
+            .entries(self.elements().iter().map(|x| unsafe { &**x }))
+            .finish()
+    }
+}
+
+impl std::fmt::Display for SVec {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "[")?;
+        let mut first = true;
+        for i in self.elements() {
+            if !first {
+                write!(f, ", ")?;
+            } else {
+                first = false;
+            }
+            write!(f, "{}", unsafe { &**i })?;
+        }
+        write!(f, "]")
     }
 }
 

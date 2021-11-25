@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2018"
 
 [features]
-# Alpha is not ready for prime-time yet, so most builds should have
-# maximum debugging info.
-default = ["debug"]
+default = [
+  # Alpha is not ready for prime-time yet, so most builds should have
+  # maximum debugging info.
+  "debug"
+]
 debug = ["gc_debug"]
 gc_debug = []
 
