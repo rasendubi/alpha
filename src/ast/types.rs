@@ -2,7 +2,7 @@ use crate::ast::exp::{TypeDefinition, TypeSpecifier};
 use crate::env::Env;
 use crate::Symbol;
 
-use std::error::Error;
+use anyhow::Result;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TypeDef {
@@ -20,7 +20,7 @@ pub enum TypeDescriptor {
 }
 
 impl TypeDef {
-    pub fn from_exp(e: &TypeDefinition, types: &Env<TypeDef>) -> Result<TypeDef, Box<dyn Error>> {
+    pub fn from_exp(e: &TypeDefinition, types: &Env<TypeDef>) -> Result<TypeDef> {
         let name = e.name;
         let supertype = e.supertype;
         let typedef = match &e.specifier {

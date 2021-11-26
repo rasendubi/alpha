@@ -1,5 +1,3 @@
-use std::error::Error;
-
 use tracing::error;
 
 use llvm::builder::Builder;
@@ -8,7 +6,7 @@ use llvm::module::Module;
 use llvm::types::AddressSpace;
 use llvm::values::Value;
 
-use simple_error::{bail, simple_error};
+use anyhow::{anyhow, bail, Result};
 
 use crate::ast::exp::{self, Exp};
 use crate::ast::types::{TypeDef, TypeDescriptor};
@@ -51,7 +49,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         module: &'a Module,
         env: &'a Env<'a, EnvValue>,
         f: &exp::Function,
-    ) -> Result<Value, Box<dyn Error>> {
+    ) -> Result<Value> {
         let mut compiler = Compiler {
             context,
             prologue_builder: context.create_builder(),
@@ -69,7 +67,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         module: &'a Module,
         env: &'a Env<'a, EnvValue>,
         def: &TypeDef,
-    ) -> Result<Value, Box<dyn Error>> {
+    ) -> Result<Value> {
         let mut compiler = Compiler {
             context,
             prologue_builder: context.create_builder(),
@@ -89,7 +87,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         def: &TypeDef,
         i: usize,
         name: &str,
-    ) -> Result<Value, Box<dyn Error>> {
+    ) -> Result<Value> {
         let mut compiler = Compiler {
             context,
             prologue_builder: context.create_builder(),
@@ -185,7 +183,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         self.builder.build_store(typetag_ptr, tag);
     }
 
-    fn compile_constr(&mut self, def: &TypeDef) -> Result<Value, Box<dyn Error>> {
+    fn compile_constr(&mut self, def: &TypeDef) -> Result<Value> {
         let fields = match &def.typedef {
             TypeDescriptor::Struct { fields } => fields,
             _ => panic!("Compiler::compile_constr() called on non-struct"),
@@ -255,12 +253,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         }
     }
 
-    fn compile_access(
-        &mut self,
-        def: &TypeDef,
-        i: usize,
-        name: &str,
-    ) -> Result<Value, Box<dyn Error>> {
+    fn compile_access(&mut self, def: &TypeDef, i: usize, name: &str) -> Result<Value> {
         let fields = match &def.typedef {
             TypeDescriptor::Struct { fields } => fields,
             _ => panic!("Compiler::compile_constr() called on non-struct"),
@@ -340,7 +333,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         }
     }
 
-    fn compile_fn(&mut self, f: &exp::Function) -> Result<Value, Box<dyn Error>> {
+    fn compile_fn(&mut self, f: &exp::Function) -> Result<Value> {
         let function = self.compile_prototype(&f.prototype)?;
 
         let body_exp = match f.body.as_ref() {
@@ -379,10 +372,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         }
     }
 
-    fn compile_prototype<'e>(
-        &mut self,
-        proto: &exp::FunctionPrototype,
-    ) -> Result<Value, Box<dyn Error>> {
+    fn compile_prototype<'e>(&mut self, proto: &exp::FunctionPrototype) -> Result<Value> {
         let name = proto.name.as_str();
 
         let ptr_t = self
@@ -426,7 +416,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         env: &'e Env<'e, EnvValue>,
         proto: &exp::FunctionPrototype,
         fn_val: Value,
-    ) -> Result<Env<'e, EnvValue>, Box<dyn Error>> {
+    ) -> Result<Env<'e, EnvValue>> {
         let mut params = fn_val.get_param_iter();
         let n_args = params.next().unwrap();
         let args = params.next().unwrap();
@@ -483,7 +473,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         self.builder.build_load(ptr, "")
     }
 
-    fn compile_exp(&mut self, env: &Env<EnvValue>, exp: &Exp) -> Result<Value, Box<dyn Error>> {
+    fn compile_exp(&mut self, env: &Env<EnvValue>, exp: &Exp) -> Result<Value> {
         let result = match exp {
             Exp::Type(_) => panic!("compile_exp is called with Exp::Type"),
             Exp::Symbol(s) => match env.lookup(*s) {
@@ -585,7 +575,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                     result = Some(self.compile_exp(env, e)?);
                 }
 
-                result.ok_or_else(|| simple_error!("empty blocks are not supported yet"))?
+                result.ok_or_else(|| anyhow!("empty blocks are not supported yet"))?
             }
             Exp::Function(_) => {
                 bail!("function definition is not expected here")
@@ -594,12 +584,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         Ok(result)
     }
 
-    fn build_call(
-        &mut self,
-        f: Value,
-        args: &[Value],
-        name: &str,
-    ) -> Result<Value, Box<dyn Error>> {
+    fn build_call(&mut self, f: Value, args: &[Value], name: &str) -> Result<Value> {
         let any_ptr_t = self
             .context
             .get_named_struct("Any")

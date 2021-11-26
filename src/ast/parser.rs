@@ -1,10 +1,9 @@
 //! Parser converts a string into [`SExp`].
 use std::array::IntoIter;
 use std::collections::HashMap;
-use std::error::Error;
 use std::iter::{FromIterator, Peekable};
 
-use simple_error::{bail, simple_error};
+use anyhow::{anyhow, bail, Result};
 
 use logos::{Lexer, Logos};
 
@@ -40,8 +39,8 @@ impl<'a> From<&Token<'a>> for ParseKey<'a> {
     }
 }
 
-type ParseFn<'a> = dyn Fn(&mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>>;
-type InfixParseFn<'a> = dyn Fn(&mut Parser<'a>, SExp<'a>) -> Result<SExp<'a>, Box<dyn Error>>;
+type ParseFn<'a> = dyn Fn(&mut Parser<'a>) -> Result<SExp<'a>>;
+type InfixParseFn<'a> = dyn Fn(&mut Parser<'a>, SExp<'a>) -> Result<SExp<'a>>;
 
 pub struct ParseRule<'a> {
     prefix: Option<&'a ParseFn<'a>>,
@@ -119,19 +118,19 @@ impl<'a> Parser<'a> {
         self.lexer.peek().is_some()
     }
 
-    pub fn parse(&mut self) -> Result<SExp<'a>, Box<dyn Error>> {
+    pub fn parse(&mut self) -> Result<SExp<'a>> {
         self.parse_expr()
     }
 
-    pub fn parse_expr(&mut self) -> Result<SExp<'a>, Box<dyn Error>> {
+    pub fn parse_expr(&mut self) -> Result<SExp<'a>> {
         self.parse_precedence(0)
     }
 
-    pub fn parse_precedence(&mut self, precedence: usize) -> Result<SExp<'a>, Box<dyn Error>> {
+    pub fn parse_precedence(&mut self, precedence: usize) -> Result<SExp<'a>> {
         let token = self
             .lexer
             .peek()
-            .ok_or_else(|| simple_error!("unexpected end of input"))?;
+            .ok_or_else(|| anyhow!("unexpected end of input"))?;
         let prefix_parser = self
             .parse_table
             .get(&token.into())
@@ -162,11 +161,11 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    fn parse_symbol(&mut self) -> Result<SExp<'a>, Box<dyn Error>> {
+    fn parse_symbol(&mut self) -> Result<SExp<'a>> {
         match self
             .lexer
             .next()
-            .ok_or_else(|| simple_error!("identifier expected"))?
+            .ok_or_else(|| anyhow!("identifier expected"))?
         {
             Token::Symbol(s) => Ok(SExp::Symbol(s)),
             _ => bail!("identifier expected"),
@@ -174,7 +173,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn parse_fn<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_fn<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // fn
 
     let mut expr = Vec::new();
@@ -184,7 +183,7 @@ fn parse_fn<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
     Ok(SExp::List(expr))
 }
 
-fn parse_type<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_type<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // type
     let mut expr = Vec::with_capacity(3);
     expr.push(SExp::Symbol("type"));
@@ -193,28 +192,28 @@ fn parse_type<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
     Ok(SExp::List(expr))
 }
 
-fn parse_integer<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_integer<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     match p.lexer.next().unwrap() {
         Token::Integer(s) => Ok(SExp::Integer(s)),
         _ => unreachable!(),
     }
 }
 
-fn parse_float<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_float<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     match p.lexer.next().unwrap() {
         Token::Float(s) => Ok(SExp::Float(s)),
         _ => unreachable!(),
     }
 }
 
-fn parse_string<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_string<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     match p.lexer.next().unwrap() {
         Token::String(s) => Ok(SExp::String(unescape_string(s))),
         _ => unreachable!(),
     }
 }
 
-fn parse_group<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_group<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // (
     let expr = p.parse_expr()?;
     match p.lexer.next() {
@@ -224,7 +223,7 @@ fn parse_group<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
     Ok(expr)
 }
 
-fn parse_block<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_block<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // {
     let mut v = Vec::new();
     v.push(SExp::Symbol("block"));
@@ -238,14 +237,14 @@ fn parse_block<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
         }
     }
     if p.lexer.peek().is_none() {
-        bail!("} is expected")
+        bail!("}} is expected")
     }
     p.lexer.next(); // }
 
     Ok(SExp::List(v))
 }
 
-fn parse_fallback<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_fallback<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     let token = p.lexer.next().unwrap();
     match token {
         Token::Symbol(s) => Ok(SExp::Symbol(s)),
@@ -253,7 +252,7 @@ fn parse_fallback<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
     }
 }
 
-fn parse_binary<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_binary<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>> {
     let token = p.lexer.next().unwrap();
     let precedence = p
         .parse_table
@@ -279,7 +278,7 @@ fn parse_binary<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<
     ]))
 }
 
-fn parse_dot<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_dot<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // .
     let symbol = p.parse_symbol()?;
     if p.lexer.peek() == Some(&Token::Symbol("(")) {
@@ -310,7 +309,7 @@ fn parse_dot<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<dyn
     }
 }
 
-fn parse_call<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>, Box<dyn Error>> {
+fn parse_call<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // (
 
     let mut v = Vec::new();

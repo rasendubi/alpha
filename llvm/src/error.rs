@@ -34,3 +34,6 @@ impl fmt::Display for LLVMError {
 }
 
 impl std::error::Error for LLVMError {}
+
+unsafe impl Sync for LLVMError {}
+unsafe impl Send for LLVMError {}

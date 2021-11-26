@@ -19,7 +19,7 @@ gc_debug = []
 [dependencies]
 llvm = { path = "./llvm" }
 logos = "0.12.0"
-simple-error = "0.2.3"
+anyhow = "1.0.48"
 ctor = "0.1.21"
 paste = "1.0.6"
 pretty-hex = "0.2.1"

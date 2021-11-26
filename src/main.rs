@@ -1,4 +1,4 @@
-use std::error::Error;
+use anyhow::Result;
 
 use alpha::ExecutionSession;
 
@@ -28,7 +28,7 @@ struct Opts {
     file: Option<String>,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<()> {
     let opts = Opts::parse();
 
     tracing_subscriber::fmt()

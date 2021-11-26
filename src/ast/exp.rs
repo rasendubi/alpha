@@ -1,8 +1,7 @@
 //! Untyped AST
 use std::convert::TryInto;
-use std::error::Error;
 
-use simple_error::{bail, simple_error};
+use anyhow::{anyhow, bail, Result};
 
 use crate::ast::sexp::SExp;
 use crate::{symbol, Symbol};
@@ -68,7 +67,7 @@ pub struct Call {
 }
 
 /// Lower possibly malformed sexp AST into an untyped AST.
-pub fn lower_sexp(sexp: &SExp) -> Result<Exp, Box<dyn Error>> {
+pub fn lower_sexp(sexp: &SExp) -> Result<Exp> {
     let exp = match sexp {
         SExp::Integer(n) => Exp::Integer(n.parse().expect("cannot parse i64")),
         SExp::Float(n) => Exp::Float(n.parse().expect("cannot parse f64")),
@@ -100,7 +99,7 @@ pub fn lower_sexp(sexp: &SExp) -> Result<Exp, Box<dyn Error>> {
     Ok(exp)
 }
 
-fn lower_type_definition(sexp: &SExp) -> Result<TypeDefinition, Box<dyn Error>> {
+fn lower_type_definition(sexp: &SExp) -> Result<TypeDefinition> {
     match lower_sexp(sexp)? {
         Exp::Call(Call { fun, args }) if *fun == Exp::Symbol(symbol("=")) => {
             let (name, supertype) = match &args[0] {
@@ -132,7 +131,7 @@ fn lower_type_definition(sexp: &SExp) -> Result<TypeDefinition, Box<dyn Error>> 
     }
 }
 
-fn lower_type_specifier(exp: &Exp) -> Result<TypeSpecifier, Box<dyn Error>> {
+fn lower_type_specifier(exp: &Exp) -> Result<TypeSpecifier> {
     let specifier = match exp {
         Exp::Call(Call { fun, args }) => match **fun {
             Exp::Symbol(s) if s == symbol("integer") => {
@@ -202,7 +201,7 @@ fn lower_type_specifier(exp: &Exp) -> Result<TypeSpecifier, Box<dyn Error>> {
     Ok(specifier)
 }
 
-fn lower_function(sexp: &SExp) -> Result<Function, Box<dyn Error>> {
+fn lower_function(sexp: &SExp) -> Result<Function> {
     let v = match sexp {
         SExp::List(v) if v[0] == SExp::Symbol("call") && v[1] == SExp::Symbol("=") => v,
         _ => bail!("'fn' should be followed by function assignment"),
@@ -213,11 +212,11 @@ fn lower_function(sexp: &SExp) -> Result<Function, Box<dyn Error>> {
     Ok(Function { prototype, body })
 }
 
-fn lower_function_prototype(sexp: &SExp) -> Result<FunctionPrototype, Box<dyn Error>> {
+fn lower_function_prototype(sexp: &SExp) -> Result<FunctionPrototype> {
     // (:fn (:call name params...) body)
     // (:fn (:call :: (:call name params...) result_type) body)
     let proto = sexp.as_list().ok_or_else(|| {
-        simple_error!(
+        anyhow!(
             "function definition should start with call-like sexp, given: {}",
             sexp
         )
@@ -231,16 +230,16 @@ fn lower_function_prototype(sexp: &SExp) -> Result<FunctionPrototype, Box<dyn Er
 
     let head = proto[1]
         .as_symbol()
-        .ok_or_else(|| simple_error!("function name should be a symbol, given: {}", proto[1]))?;
+        .ok_or_else(|| anyhow!("function name should be a symbol, given: {}", proto[1]))?;
     let (proto, result_type) = if head == ":" {
         let result_type = proto[3].as_symbol().ok_or_else(|| {
-            simple_error!(
+            anyhow!(
                 "function return types should be a symbol, {} given",
                 proto[3]
             )
         })?;
         let proto = proto[2].as_list().ok_or_else(|| {
-            simple_error!(
+            anyhow!(
                 "function definition should start with call-like sexp, given: {}",
                 sexp
             )
@@ -273,7 +272,7 @@ fn lower_function_prototype(sexp: &SExp) -> Result<FunctionPrototype, Box<dyn Er
     })
 }
 
-fn lower_function_parameter(sexp: &SExp) -> Result<FunctionParameter, Box<dyn Error>> {
+fn lower_function_parameter(sexp: &SExp) -> Result<FunctionParameter> {
     let param = match sexp {
         SExp::Symbol(s) => FunctionParameter {
             name: symbol(s),

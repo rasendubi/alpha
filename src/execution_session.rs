@@ -1,10 +1,9 @@
 use std::collections::HashSet;
-use std::error::Error;
 use std::io::Write;
 use std::sync::Mutex;
 
+use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
-use simple_error::simple_error;
 use tracing::{error, trace};
 
 use llvm::module::Module;
@@ -287,17 +286,14 @@ impl<'ctx> ExecutionSession<'ctx> {
         module
     }
 
-    fn load_module(&mut self, module: Module) -> Result<(), Box<dyn Error>> {
+    fn load_module(&mut self, module: Module) -> Result<()> {
         trace!("loading module:\n{}", module);
         let module = self.context.create_module(module);
         self.jit.add_module(module)?;
         Ok(())
     }
 
-    fn load_module_with_tracker(
-        &mut self,
-        module: Module,
-    ) -> Result<ResourceTracker, Box<dyn Error>> {
+    fn load_module_with_tracker(&mut self, module: Module) -> Result<ResourceTracker> {
         trace!("loading module:\n{}", module);
         let module = self.context.create_module(module);
         let tracker = self.jit.add_module_with_tracker(module)?;
@@ -310,7 +306,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     /// for compiler to work.
     ///
     /// This functions must be called once before any other operation on ExecutionSession.
-    fn build_stdlib(&mut self) -> Result<(), Box<dyn Error>> {
+    fn build_stdlib(&mut self) -> Result<()> {
         // If that's a second instantiation of ExecutionSession, delete previously stored
         // constructors.
         // TODO: not thread-safe
@@ -578,7 +574,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(())
     }
 
-    pub fn eval(&mut self, s: &str) -> Result<(), Box<dyn Error>> {
+    pub fn eval(&mut self, s: &str) -> Result<()> {
         trace!("eval: {}", s);
         let mut parser = Parser::new(s);
         while parser.has_input() {
@@ -594,7 +590,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(())
     }
 
-    fn eval_exp(&mut self, exp: Exp) -> Result<(), Box<dyn Error>> {
+    fn eval_exp(&mut self, exp: Exp) -> Result<()> {
         match exp {
             Exp::Type(t) => {
                 let alpha_type = TypeDef::from_exp(&t, &self.types)?;
@@ -607,7 +603,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     // Build a global type binding and initialize it. This does not execute any code inside the JIT.
-    fn eval_type(&mut self, alpha_type: &TypeDef) -> Result<*const DataType, Box<dyn Error>> {
+    fn eval_type(&mut self, alpha_type: &TypeDef) -> Result<*const DataType> {
         trace!("type lowered to {:?}", alpha_type);
 
         let name = alpha_type.name;
@@ -616,9 +612,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let supertype_t = self
             .global_env
             .lookup(alpha_type.supertype)
-            .ok_or_else(|| {
-                simple_error!("unable to find type: {}", alpha_type.supertype.as_str())
-            })?;
+            .ok_or_else(|| anyhow!("unable to find type: {}", alpha_type.supertype.as_str()))?;
 
         trace!("found supertype_t: {:?}", supertype_t);
         trace!("env: {:?}", self.global_env);
@@ -687,7 +681,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     /// Build LLVM IR type for `type_`.
-    fn build_type_specifier(&mut self, type_: &TypeDef) -> Result<LLVMType, Box<dyn Error>> {
+    fn build_type_specifier(&mut self, type_: &TypeDef) -> Result<LLVMType> {
         let name = type_.name.as_str();
         let t = match &type_.typedef {
             TypeDescriptor::Abstract => panic!("build_type_specifier is called for Abstract type"),
@@ -746,11 +740,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(t)
     }
 
-    fn build_constructor(
-        &mut self,
-        type_ptr: *const DataType,
-        def: &TypeDef,
-    ) -> Result<(), Box<dyn Error>> {
+    fn build_constructor(&mut self, type_ptr: *const DataType, def: &TypeDef) -> Result<()> {
         gc_box!(type_ptr);
 
         let fields = match &def.typedef {
@@ -793,11 +783,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(())
     }
 
-    fn build_accessors(
-        &mut self,
-        type_ptr: *const DataType,
-        def: &TypeDef,
-    ) -> Result<(), Box<dyn Error>> {
+    fn build_accessors(&mut self, type_ptr: *const DataType, def: &TypeDef) -> Result<()> {
         gc_box!(type_ptr);
         let fields = match &def.typedef {
             TypeDescriptor::Struct { fields } => fields,
@@ -834,7 +820,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(())
     }
 
-    fn eval_function_definition(&mut self, mut def: exp::Function) -> Result<(), Box<dyn Error>> {
+    fn eval_function_definition(&mut self, mut def: exp::Function) -> Result<()> {
         let fn_name_s = def.prototype.name;
         let method_name = self.unique_name(fn_name_s);
         let method_name_s = symbol(&method_name);
@@ -882,7 +868,7 @@ impl<'ctx> ExecutionSession<'ctx> {
     }
 
     /// Ensure a function `name` is defined. Defines it if it does not exist.
-    fn ensure_function(&mut self, name: Symbol) -> Result<AnyPtr, Box<dyn Error>> {
+    fn ensure_function(&mut self, name: Symbol) -> Result<AnyPtr> {
         match self.global_env.lookup(name) {
             Some(EnvValue::Global(name)) => unsafe {
                 return Ok(*self.jit.lookup::<*const AnyPtr>(name)?);
@@ -893,14 +879,14 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.define_function(name)
     }
 
-    fn define_function(&mut self, symbol: Symbol) -> Result<AnyPtr, Box<dyn Error>> {
+    fn define_function(&mut self, symbol: Symbol) -> Result<AnyPtr> {
         let fn_t = self.define_function_type(symbol.as_str())?;
         let fn_obj = self.define_function_object(symbol, fn_t)?;
 
         Ok(fn_obj)
     }
 
-    fn define_function_type(&mut self, fn_name: &str) -> Result<*const DataType, Box<dyn Error>> {
+    fn define_function_type(&mut self, fn_name: &str) -> Result<*const DataType> {
         let any_s = symbol("Any");
         let fn_t_name = symbol(&("fn_".to_string() + fn_name + "_t"));
         let fn_t = self.eval_type(&TypeDef {
@@ -911,11 +897,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         Ok(fn_t)
     }
 
-    fn define_function_object(
-        &mut self,
-        symbol: Symbol,
-        fn_t: *const DataType,
-    ) -> Result<AnyPtr, Box<dyn Error>> {
+    fn define_function_object(&mut self, symbol: Symbol, fn_t: *const DataType) -> Result<AnyPtr> {
         gc_box!(fn_t);
         let name = symbol.as_str();
 
@@ -962,7 +944,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         }
     }
 
-    fn eval_anonymous_expression(&mut self, e: Exp) -> Result<(), Box<dyn Error>> {
+    fn eval_anonymous_expression(&mut self, e: Exp) -> Result<()> {
         let def = exp::Function {
             prototype: exp::FunctionPrototype {
                 name: symbol("*anonymous*"),
