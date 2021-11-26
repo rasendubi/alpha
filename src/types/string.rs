@@ -32,7 +32,7 @@ impl AlphaString {
     /// converted to *const before it can be released to outside world.
     unsafe fn allocate_uninit(len: usize) -> *mut AlphaString {
         let this = gc::allocate(std::mem::size_of::<AlphaString>() + len + 1) as *mut AlphaString;
-        set_typetag(this, STRING_T.load());
+        set_type(this, STRING_T.load());
         *this = AlphaString { len, bytes: [] };
         this
     }

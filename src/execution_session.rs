@@ -1,10 +1,7 @@
 use std::collections::HashSet;
-use std::io::Write;
-use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
-use once_cell::sync::Lazy;
-use tracing::{error, trace};
+use tracing::trace;
 
 use llvm::module::Module;
 use llvm::orc::lljit::{LLJITBuilder, ResourceTracker, LLJIT};
@@ -16,205 +13,12 @@ use crate::ast::exp::{self, lower_sexp, Exp};
 use crate::ast::parser::Parser;
 use crate::ast::types::{TypeDef, TypeDescriptor};
 use crate::compiler::Compiler;
+use crate::dispatch::dispatch;
 use crate::env::Env;
 use crate::gc::{self, GcRoot, GcRootChain, GC_ROOT_CHAIN};
 use crate::gc_box;
+use crate::stdlib::*;
 use crate::types::*;
-
-static STDOUT: Lazy<Mutex<Box<dyn Write + Sync + Send>>> =
-    Lazy::new(|| Mutex::new(Box::new(std::io::stdout())));
-
-pub fn set_stdout(out: Box<dyn Write + Sync + Send>) {
-    let mut stdout = STDOUT.lock().unwrap();
-    *stdout = out;
-}
-
-extern "C" {
-    // These seem to be provided by Rust runtime. Although I am not sure how much I should rely on
-    // them.
-    fn _Unwind_Resume();
-    fn __gcc_personality_v0();
-}
-
-unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
-    gc::allocate(size as usize)
-}
-
-unsafe extern "C" fn mk_str(p: *const u8, len: u64) -> AnyPtr {
-    let bytes = std::slice::from_raw_parts(p, len as usize);
-    let s = std::str::from_utf8(&bytes).unwrap();
-    AlphaString::new(s) as AnyPtr
-}
-
-unsafe fn type_of(x: AnyPtr) -> *const DataType {
-    let result = *(x as *const *const DataType).sub(1);
-    // println!("type_of({:p}) = {:p} (typetag @ {:p})", x, result, x.sub(1));
-    result
-}
-
-#[tracing::instrument]
-unsafe extern "C" fn alpha_f64_mul(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let x: *const AlphaF64 = *args.add(1).cast();
-    let y: *const AlphaF64 = *args.add(2).cast();
-    trace!("alpha_f64_mul({:?}, {:?})", *x, *y);
-    let result = (*x).value * (*y).value;
-    AlphaF64::allocate(result).cast()
-}
-
-#[tracing::instrument]
-unsafe extern "C" fn alpha_i64_mul(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let x: *const AlphaI64 = *args.add(1).cast();
-    let y: *const AlphaI64 = *args.add(2).cast();
-    trace!("alpha_i64_mul({:?}, {:?})", *x, *y);
-    let result = (*x).value * (*y).value;
-    AlphaI64::allocate(result).cast()
-}
-
-#[tracing::instrument]
-unsafe extern "C" fn alpha_type_of(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let x = *args.add(1);
-    trace!("alpha_type_of({:?})", x);
-    type_of(x) as AnyPtr
-}
-
-#[tracing::instrument]
-unsafe extern "C" fn alpha_print_any(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let mut stdout = STDOUT.lock().unwrap();
-    let x = *args.add(1) as AnyPtr;
-    trace!("alpha_print_any({:?})", x);
-    let type_ = type_of(x);
-    write!(stdout, "<{}@{:p}>", (*type_).name, x).unwrap();
-    VOID.load() as AnyPtr
-}
-
-#[tracing::instrument]
-unsafe extern "C" fn alpha_print_void(_n_args: i64, _args: *const AnyPtr) -> AnyPtr {
-    trace!("alpha_print_void()");
-    // print nothing
-    VOID.load() as AnyPtr
-}
-
-#[tracing::instrument]
-unsafe extern "C" fn alpha_print_i64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let mut stdout = STDOUT.lock().unwrap();
-    let x = *(*args.add(1) as *const i64);
-    trace!("alpha_print_i64({:?})", x);
-    write!(stdout, "{}", x).unwrap();
-    VOID.load() as AnyPtr
-}
-
-#[tracing::instrument]
-unsafe extern "C" fn alpha_print_f64(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let mut stdout = STDOUT.lock().unwrap();
-    let x = *(*args.add(1) as *const AlphaF64);
-    trace!("alpha_print_f64({:?})", x);
-    write!(stdout, "{}", x.value).unwrap();
-    VOID.load() as AnyPtr
-}
-
-#[tracing::instrument]
-unsafe extern "C" fn alpha_print_string(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let mut stdout = STDOUT.lock().unwrap();
-    let x = *args.add(1) as *const AlphaString;
-    trace!("alpha_print_string({:?})", x);
-    trace!("x = {:?}", *x);
-    write!(stdout, "{}", *x).unwrap();
-    VOID.load() as AnyPtr
-}
-
-#[tracing::instrument]
-unsafe extern "C" fn alpha_print_datatype(_n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    let mut stdout = STDOUT.lock().unwrap();
-    let x = &*(*args.add(1) as *const DataType);
-    trace!("alpha_print_datatype({:?})", x);
-    write!(stdout, "{}", x).unwrap();
-    VOID.load() as AnyPtr
-}
-
-#[tracing::instrument]
-unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
-    #[allow(unused_must_use)] // ignore write!() errors
-    fn format_signature(args_slice: &[*const AlphaValue]) -> String {
-        use std::fmt::Write;
-        let mut sig = String::new();
-
-        write!(sig, "[");
-        let mut first = true;
-        for arg in args_slice.iter() {
-            if !first {
-                write!(sig, ", ");
-            } else {
-                first = false;
-            }
-            write!(sig, "{}", unsafe { &*type_of(*arg) });
-        }
-        write!(sig, "]");
-
-        sig
-    }
-
-    // trace!("LLVM_GC_ROOT_CHAIN: {:p}", GC_ROOT_CHAIN);
-    // llvm::gc::shadow_stack::visit_roots(GC_ROOT_CHAIN, |ptr, _meta| {
-    //     trace!("LLVM ROOT: {:p}", ptr);
-    //     gc::debug_ptr(ptr.cast());
-    // });
-    // trace!("dispatch from:\n{:?}", backtrace::Backtrace::new());
-
-    let args_slice = std::slice::from_raw_parts(args, n_args as usize);
-    trace!("dispatch: {:?}", args_slice);
-
-    let f = args_slice[0];
-
-    let typetag = get_typetag(f);
-    let methods = &(*(*typetag).methods);
-
-    let mut selected_method: Option<&Method> = None;
-    for method in methods.elements() {
-        let method = &*(*method as *const Method);
-        if !method.is_applicable(args_slice) {
-            continue;
-        }
-
-        // this method is applicable
-
-        selected_method = Some(match selected_method {
-            None => method,
-            Some(current) => {
-                // check if it is strictly more specific
-                if current.is_subtype_of(method) {
-                    // selected method remains selected, skip this one
-                    current
-                } else if method.is_subtype_of(current) {
-                    // the new method is more specific
-                    method
-                } else {
-                    // Both methods are applicable but neither is more specific — ambiguity.
-                    error!(
-                        "ambiguity finding matching method for signature: {}",
-                        &format_signature(args_slice)
-                    );
-                    error!("available methods: {}", methods);
-                    panic!("ambiguity! between {} and {}", current, method);
-                }
-            }
-        });
-    }
-
-    match selected_method {
-        Some(method) => {
-            trace!("calling found method: {:?}", *method);
-            (method.instance)(n_args, args)
-        }
-        None => {
-            error!(
-                "unable to find matching method for: {}",
-                &format_signature(args_slice)
-            );
-            error!("available methods: {}", methods);
-            panic!("unable to find matching method");
-        }
-    }
-}
 
 #[derive(Debug)]
 pub enum EnvValue {
@@ -478,17 +282,11 @@ impl<'ctx> ExecutionSession<'ctx> {
             let type_of_s = symbol("type_of");
             let type_of_f = self.define_function(type_of_s)?;
             trace!("type_of_f: {:?}", type_of_f);
-            unsafe {
-                gc::debug_ptr(type_of_f.cast());
-            }
             gc_box!(type_of_f);
             let signature = unsafe { SVec::new(&[ANY_T.load() as AnyPtr, ANY_T.load() as AnyPtr]) };
             let m = unsafe { Method::new(signature, alpha_type_of) };
             gc_box!(m);
             trace!("type_of_f after allocations: {:?}", type_of_f.load());
-            unsafe {
-                gc::debug_ptr(type_of_f.load().cast());
-            }
             self.function_add_method(type_of_f.load(), m.load());
         }
 
@@ -773,7 +571,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         trace!(
             "build_constructor(): allocated method {:?} (ty={:?}), signature: {:?}",
             unsafe { &*method },
-            unsafe { get_typetag(method) },
+            unsafe { type_of(method) },
             unsafe { &*(*method).signature }
         );
 
@@ -839,7 +637,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         self.load_module(module)?;
         let instance = self.jit.lookup::<GenericFn>(instance_fn_name)?;
 
-        let fn_t = unsafe { get_typetag(fn_obj.load()) };
+        let fn_t = unsafe { type_of(fn_obj.load()) };
         gc_box!(fn_t);
         let ps0: AnyPtr = if fn_t.load() == DATATYPE_T.load() {
             // fn_obj is a DataType. This means the user is defining a constructor, so the first
@@ -904,7 +702,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         // allocate function object
         let fn_obj = unsafe {
             let fn_obj = gc_allocate(0) as AnyPtrMut;
-            set_typetag(fn_obj, fn_t.load());
+            set_type(fn_obj, fn_t.load());
             fn_obj
         };
         gc_box!(fn_obj);

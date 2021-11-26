@@ -15,7 +15,7 @@ impl AlphaI64 {
     /// this function.
     pub unsafe fn allocate(value: i64) -> *const Self {
         let result: *mut Self = gc::allocate(size_of::<Self>()).cast();
-        set_typetag(result, Self::typetag());
+        set_type(result, Self::typetag());
         (*result).value = value;
         result
     }
@@ -60,7 +60,7 @@ impl AlphaF64 {
     /// this function.
     pub unsafe fn allocate(value: f64) -> *const Self {
         let result: *mut Self = gc::allocate(size_of::<Self>()).cast();
-        set_typetag(result, Self::typetag());
+        set_type(result, Self::typetag());
         (*result).value = value;
         result
     }

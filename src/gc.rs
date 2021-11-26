@@ -4,10 +4,8 @@ pub use self::roots::{
 };
 
 use std::alloc;
-use std::collections::HashSet;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::Mutex;
 
 use pretty_hex::{HexConfig, PrettyHex};
 use tracing::{info, trace};
@@ -20,12 +18,80 @@ static mut FROM: Block = Block::empty();
 #[cfg_attr(feature = "gc_debug", allow(dead_code))]
 const GC_THRESHOLD: usize = 256;
 
-#[derive(Debug)]
+/// All values in Alpha are tagged with `Tag`, which resides before any value in memory.
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
-struct Typetag {
+struct Tag {
+    // This can either be a (*const DataType) or (*const AlphaValue | 0x1)
     ty: *const DataType,
 }
-const TYPETAG_SIZE: usize = std::mem::size_of::<Typetag>();
+const TAG_SIZE: usize = std::mem::size_of::<Tag>();
+
+pub unsafe fn type_of<T: ?Sized>(ptr: *const T) -> *const DataType {
+    let ty = Tag::of(ptr).get_type();
+    debug_assert_eq!(
+        Tag::of(ty).get_type(),
+        DATATYPE_T.load(),
+        "type_of(): type of type is not DataType"
+    );
+    ty
+}
+
+pub unsafe fn set_type<T: ?Sized>(ptr: *const T, ty: *const DataType) {
+    *get_tag_ptr(ptr) = Tag::new(ty);
+}
+
+unsafe fn get_tag_ptr<T: ?Sized>(ptr: *const T) -> *mut Tag {
+    debug_assert!(!ptr.is_null(), "get_tag_ptr() is called on null");
+    debug_assert_eq!(
+        (ptr as *const () as usize) % 8,
+        0,
+        "get_tag_ptr() is called on unaligned pointer: {:p}",
+        ptr
+    );
+    (ptr as *mut Tag).sub(1)
+}
+
+impl Tag {
+    unsafe fn of<T: ?Sized>(ptr: *const T) -> Tag {
+        *get_tag_ptr(ptr)
+    }
+
+    unsafe fn set<T: ?Sized>(ptr: *const T, tag: Tag) {
+        *get_tag_ptr(ptr) = tag;
+    }
+
+    fn new(ty: *const DataType) -> Tag {
+        Self { ty: ty }
+    }
+
+    fn moved_out<T>(ptr: *const T) -> Tag {
+        Self {
+            ty: ((ptr as usize) | 0x1) as *const DataType,
+        }
+    }
+
+    fn get_type(&self) -> *const DataType {
+        debug_assert!(
+            !self.is_moved_out(),
+            "Tag::get_type() is called on moved out tag"
+        );
+        self.ty as *const DataType
+    }
+
+    fn is_moved_out(&self) -> bool {
+        (self.ty as usize) & 0x1 != 0x0
+    }
+
+    fn as_moved_out(&self) -> Option<AnyPtr> {
+        let ty = self.ty as usize;
+        if ty & 0x1 == 0x1 {
+            Some((ty & !0x1) as AnyPtr)
+        } else {
+            None
+        }
+    }
+}
 
 /// `Block` is a thread-safe bump allocator.
 struct Block {
@@ -132,9 +198,9 @@ fn align_size(size: usize) -> usize {
 pub unsafe fn allocate(size: usize) -> *mut u8 {
     maybe_collect_garbage();
     let size = align_size(size);
-    let start = TO.bump(TYPETAG_SIZE + size);
+    let start = TO.bump(TAG_SIZE + size);
     let start = start.unwrap_or_else(|| panic!("gc: out of memory"));
-    let result = start.add(TYPETAG_SIZE);
+    let result = start.add(TAG_SIZE);
     trace!("allocting from:\n{:?}", backtrace::Backtrace::new());
     trace!("allocate({}) = {:#?}", size, result);
     result
@@ -143,11 +209,11 @@ pub unsafe fn allocate(size: usize) -> *mut u8 {
 /// Allocate permanent memory block. It is guaranteed to never be freed up by garbage collector.
 pub unsafe fn allocate_perm(size: usize) -> *mut u8 {
     let start = alloc::alloc(alloc::Layout::from_size_align_unchecked(
-        TYPETAG_SIZE + size,
+        TAG_SIZE + size,
         16,
     ));
-    std::slice::from_raw_parts_mut(start, TYPETAG_SIZE + size).fill(0);
-    start.add(TYPETAG_SIZE)
+    std::slice::from_raw_parts_mut(start, TAG_SIZE + size).fill(0);
+    start.add(TAG_SIZE)
 }
 
 pub unsafe fn maybe_collect_garbage() {
@@ -162,23 +228,15 @@ pub unsafe fn maybe_collect_garbage() {
 }
 
 #[tracing::instrument]
-pub unsafe fn data_size(ptr: AnyPtr) -> usize {
+unsafe fn data_size(ptr: AnyPtr) -> usize {
     let size = (*ptr).size();
     let size = align_size(size);
     size
 }
 
-pub unsafe fn is_moved_out(p: AnyPtr) -> Option<AnyPtr> {
-    let ty = get_typetag(p);
-    if (ty as usize) & 0x1 == 0x1 {
-        Some(((ty as usize) & !0x1) as AnyPtr)
-    } else {
-        None
-    }
-}
-pub unsafe fn resolve_moved_out(p: AnyPtr) -> AnyPtr {
-    match is_moved_out(p) {
-        Some(new_p) => new_p,
+unsafe fn resolve_moved_out<T>(p: *const T) -> *const T {
+    match Tag::of(p).as_moved_out() {
+        Some(new_p) => new_p as *const T,
         None => p,
     }
 }
@@ -221,8 +279,8 @@ pub unsafe fn collect_garbage() {
         let span = tracing::trace_span!("traverse_to", "{:p}", cur);
         let _guard = span.enter();
 
-        let ty_ptr = typetag_ptr(cur);
-        trace_ptr(ty_ptr as _);
+        let ty_ptr = get_tag_ptr(cur);
+        trace_ptr((&mut (*ty_ptr).ty as *mut *const DataType).cast());
         trace_value(cur as AnyPtrMut);
         let size = data_size(cur as _);
         cur = cur.add(size);
@@ -255,7 +313,7 @@ unsafe fn trace_ptr(ptr_loc: *mut AnyPtrMut) -> bool {
     if ptr.is_null() {
         return false;
     }
-    debug_trace_ptr(ptr);
+
     // FROM.end is inclusive because ptr can be zero-sized object.
     if (ptr as *const u8) < FROM.start || (ptr as *const u8) > FROM.end {
         // Not in the from block — likely a permanent object.
@@ -263,29 +321,37 @@ unsafe fn trace_ptr(ptr_loc: *mut AnyPtrMut) -> bool {
         return false;
     }
 
-    let ty = get_typetag(ptr);
-    trace!("ty: {:p}", ty);
+    let tag = Tag::of(ptr);
+    trace!("tag: {:?}", tag);
 
-    *ptr_loc = if (ty as usize) & 0x1 == 0x1 {
-        // moved out
-        let new = ((ty as usize) & !0x1) as AnyPtrMut;
-        trace!("moved out: {:p} -> {:p}", ptr, new);
-        new
-    } else {
-        let size = data_size(ptr);
-        let new = TO.bump(size + 8 /* typetag */).unwrap().add(8) as AnyPtrMut;
-        trace!(
-            "copying: {:p} -> {:p} (ty={:p}, size={})",
-            ptr,
-            new,
-            ty,
-            size
-        );
+    *ptr_loc = match tag.as_moved_out() {
+        Some(new) => {
+            trace!("moved out: {:p} -> {:p}", ptr, new);
+            new as *mut _
+        }
+        None => {
+            // Check if the type of ptr has been moved out. Without this, we might calculate the
+            // size incorrectly.
+            let ty = resolve_moved_out(tag.get_type());
+            let tag = Tag::new(ty);
+            Tag::set(ptr, tag);
 
-        set_typetag(new, ty);
-        set_typetag(ptr, ((new as usize) | 0x1) as *const DataType); // mark it as moved out
-        std::ptr::copy_nonoverlapping(ptr as *const u8, new as *mut u8, size);
-        new
+            let size = data_size(ptr);
+            let new = TO.bump(TAG_SIZE + size).unwrap().add(TAG_SIZE) as AnyPtrMut;
+            trace!(
+                "copying: {:p} -> {:p} (tag={:?}, size={})",
+                ptr,
+                new,
+                tag,
+                size
+            );
+
+            Tag::set(new, tag);
+            Tag::set(ptr, Tag::moved_out(new));
+
+            std::ptr::copy_nonoverlapping(ptr as *const u8, new as *mut u8, size);
+            new
+        }
     };
 
     debug_assert!(
@@ -305,66 +371,6 @@ unsafe fn trace_value(ptr: *mut AlphaValue) {
     }
 
     (*ptr).trace_pointers(trace_ptr);
-}
-
-#[cfg(feature = "gc_debug")]
-static mut TRACED_PTRS: once_cell::sync::Lazy<Mutex<HashSet<AnyPtr>>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(HashSet::new()));
-
-#[cfg(feature = "gc_debug")]
-unsafe fn debug_trace_ptr(ptr: AnyPtr) {
-    if ptr.is_null() {
-        return;
-    }
-
-    let mut traced_ptrs = TRACED_PTRS.lock().unwrap();
-    if !traced_ptrs.contains(&ptr) {
-        debug_ptr(ptr);
-
-        traced_ptrs.insert(ptr);
-    }
-}
-#[cfg(not(feature = "gc_debug"))]
-unsafe fn debug_trace_ptr(_ptr: AnyPtr) {}
-
-#[cfg(not(feature = "gc_debug"))]
-pub unsafe fn debug_ptr(_ptr: AnyPtr) {}
-// TODO: convert this into a type wrapper that gets typetag and applies the appropriate format.
-#[cfg(feature = "gc_debug")]
-#[tracing::instrument]
-pub unsafe fn debug_ptr(ptr: AnyPtr) {
-    if ptr.is_null() {
-        return;
-    }
-    let ty = get_typetag(ptr);
-    let ty = resolve_moved_out(ty.cast()).cast();
-
-    assert!(
-        is_moved_out(ptr).is_none(),
-        "debug_ptr() value is moved out: {:p} -> {:p}",
-        ptr,
-        resolve_moved_out(ptr)
-    );
-    // assert!(
-    //     is_moved_out(ty.cast()).is_none(),
-    //     "debug_ptr() type is moved out: {:p} -> {:p}",
-    //     ty,
-    //     resolve_moved_out(ty.cast())
-    // );
-    assert_eq!(
-        get_typetag(ty),
-        DATATYPE_T.load(),
-        "debug_ptr() type of type is not DataType"
-    );
-    if ty == DATATYPE_T.load() {
-        let ptr = ptr.cast::<DataType>();
-        if ((*ptr).name.node as *const _ as *const u8).is_null() {
-            // datatype is not completely initialized
-            return;
-        }
-    }
-
-    trace!(target: "alpha::gc::debug_value", "{:?}", *ptr);
 }
 
 #[cfg(test)]
@@ -402,7 +408,7 @@ mod tests {
             let s = SVec::push(s, ANY_T.load().cast());
             gc_box!(s);
             collect_garbage();
-            assert_eq!(get_typetag(s.load()), SVEC_T.load());
+            assert_eq!(type_of(s.load()), SVEC_T.load());
             assert_eq!((*s.load()).len(), 1);
         }
     }
@@ -421,7 +427,7 @@ mod tests {
             let m = Method::new(signature.load(), nothing);
             gc_box!(m);
             collect_garbage();
-            assert_eq!(get_typetag(m.load()), METHOD_T.load());
+            assert_eq!(type_of(m.load()), METHOD_T.load());
             assert_eq!((*m.load()).signature, signature.load());
             assert!((*m.load()).instance == nothing, "instance does not match");
         }
@@ -457,8 +463,8 @@ mod tests {
 
             assert_eq!((*(*ty.load()).methods).len(), 1);
 
-            debug_ptr(ty.load().cast());
-            debug_ptr((*ty.load()).methods.cast());
+            println!("{:?}", ty.load());
+            println!("{:?}", (*ty.load()).methods);
         }
     }
 

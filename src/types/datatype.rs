@@ -80,13 +80,13 @@ impl DataType {
     /// This function returns uninitialized DataType.
     pub unsafe fn allocate(n_ptrs: usize) -> *mut DataType {
         let this = gc::allocate(size_of::<DataType>() + n_ptrs * size_of::<usize>());
-        set_typetag(this, DATATYPE_T.load());
+        set_type(this, DATATYPE_T.load());
         this.cast()
     }
 
     pub unsafe fn allocate_perm(n_ptrs: usize) -> *mut DataType {
         let this = gc::allocate_perm(size_of::<DataType>() + n_ptrs * size_of::<usize>());
-        set_typetag(this, DATATYPE_T.load());
+        set_type(this, DATATYPE_T.load());
         this.cast()
     }
 
@@ -105,8 +105,8 @@ impl DataType {
     pub unsafe fn add_method(this: *mut Self, method: *const Method) {
         debug_assert!(!this.is_null());
         debug_assert!(!method.is_null());
-        debug_assert_eq!(get_typetag(this), DATATYPE_T.load());
-        debug_assert_eq!(get_typetag(method), METHOD_T.load());
+        debug_assert_eq!(type_of(this), DATATYPE_T.load());
+        debug_assert_eq!(type_of(method), METHOD_T.load());
 
         trace!(
             "add_method({:p}:{:?} {:p}:{:?})",
@@ -116,7 +116,6 @@ impl DataType {
             *method
         );
         gc_box!(this);
-        // gc_box!(method);
 
         let override_pos = (&*(*this.load()).methods)
             .elements()

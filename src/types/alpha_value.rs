@@ -7,15 +7,9 @@ use crate::types::*;
 pub struct AlphaValue;
 
 impl AlphaValue {
-    pub unsafe fn get_type(&self) -> *const DataType {
-        let tag = get_typetag(self);
-        debug_assert_eq!((tag as usize) & 0x1, 0x0, "value is moved out");
-        tag
-    }
-
     fn as_builtin_datatype(&self) -> Option<&dyn AlphaDataType> {
         unsafe {
-            let ty = self.get_type();
+            let ty = type_of(self);
             let data: &dyn AlphaDataType = if ty == DataType::typetag() {
                 &*(self as *const Self as *const DataType)
             } else if ty == Method::typetag() {
@@ -39,7 +33,7 @@ impl AlphaValue {
 
     fn as_builtin_datatype_mut(&mut self) -> Option<&mut dyn AlphaDataType> {
         unsafe {
-            let ty = self.get_type();
+            let ty = type_of(self);
             let data: &mut dyn AlphaDataType = if ty == DataType::typetag() {
                 &mut *(self as *mut Self as *mut DataType)
             } else if ty == Method::typetag() {
@@ -67,7 +61,7 @@ impl AlphaDataType for AlphaValue {
         self.as_builtin_datatype().map_or_else(
             || unsafe {
                 // generic datatype
-                let ty = self.get_type();
+                let ty = type_of(self);
                 (*ty).size
             },
             |datatype| datatype.size(),
@@ -80,8 +74,8 @@ impl AlphaDataType for AlphaValue {
         } else {
             unsafe {
                 // trace as generic datatype
+                let ty = type_of(self); // self datatype
                 let ptr = self as *mut Self;
-                let ty = get_typetag(ptr); // self datatype
                 let ptr_offsets = (*ty).pointers();
                 for offset in ptr_offsets {
                     let field = (ptr as *mut u8).add(*offset) as *mut AnyPtrMut;
@@ -100,7 +94,7 @@ impl std::fmt::Debug for AlphaValue {
             std::fmt::Debug::fmt(&datatype, f)
         } else {
             unsafe {
-                let ty = self.get_type();
+                let ty = type_of(self);
                 let ptr = self as *const Self as *const u8;
                 f.debug_struct("AlphaValue")
                     .field("type", &(*ty))
@@ -126,7 +120,7 @@ impl std::fmt::Display for AlphaValue {
             std::fmt::Display::fmt(&datatype, f)
         } else {
             unsafe {
-                let ty = self.get_type();
+                let ty = type_of(self);
                 write!(f, "<{}>", &*ty)
             }
         }

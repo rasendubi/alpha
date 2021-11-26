@@ -25,7 +25,7 @@ impl SVec {
         trace!("SVec::new({:?})", elements);
         for (i, e) in elements.iter().enumerate() {
             trace!("{} = @{:p}", i, *e);
-            trace!("{} = ty {:?}", i, &*get_typetag(*e));
+            trace!("{} = ty {:?}", i, &*type_of(*e));
             trace!("{} = {:?}", i, &**e);
         }
         gc::with_gc_box_slice(elements, |elements| {
@@ -51,7 +51,7 @@ impl SVec {
             "SVec::push({:p}, {:p} ty={:p})",
             this,
             value,
-            get_typetag(value)
+            type_of(value)
         );
         debug_assert!(!this.is_null());
         debug_assert!(!value.is_null());
@@ -104,7 +104,7 @@ impl SVec {
     unsafe fn alloc(len: usize) -> *mut Self {
         let size = (len + 1) * size_of::<usize>();
         let this = gc::allocate(size) as *mut Self;
-        set_typetag(this, SVEC_T.load());
+        set_type(this, SVEC_T.load());
         (*this).len = len;
         this
     }

@@ -6,7 +6,6 @@ use std::sync::Mutex;
 use once_cell::sync::Lazy;
 use tracing::trace;
 
-use crate::gc::*;
 use crate::types::*;
 
 pub use llvm::gc::shadow_stack::{pop_gcframe, push_gcframe, FrameMap, GcRootChain, StackEntry};
@@ -41,7 +40,6 @@ pub unsafe fn add_global_root(root: GcRoot<'static, AlphaValue>) {
         root.as_anyptr(),
         *root.as_anyptr()
     );
-    debug_ptr(*root.as_anyptr());
     roots.insert(root);
 }
 

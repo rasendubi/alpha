@@ -23,7 +23,7 @@ gc_global!(pub I64_T: DataType);
 unsafe fn allocate_global_type<T: AlphaType>(global: &GcRoot<DataType>) {
     let ptrs = T::pointers();
     let t = DataType::allocate_perm(ptrs.len());
-    set_typetag(t, DATATYPE_T.load());
+    set_type(t, DATATYPE_T.load());
     (*t).n_ptrs = ptrs.len();
     (*t).pointers_mut().copy_from_slice(ptrs);
     global.store(t);
@@ -41,7 +41,7 @@ pub fn init() {
             let ptrs = <DataType as AlphaType>::pointers();
             let datatype_t = DataType::allocate_perm(ptrs.len());
             DATATYPE_T.store(datatype_t);
-            set_typetag(datatype_t, datatype_t);
+            set_type(datatype_t, datatype_t);
             (*datatype_t).size = std::mem::size_of::<DataType>();
             (*datatype_t).n_ptrs = ptrs.len();
             (*datatype_t).pointers_mut().copy_from_slice(ptrs);
@@ -66,7 +66,7 @@ pub fn init() {
         SVEC_EMPTY.store(SVec::new(&[]) as *mut _);
         {
             let void = gc::allocate_perm(0) as *mut Void;
-            set_typetag(void, VOID_T.load());
+            set_type(void, VOID_T.load());
             VOID.store(void);
         }
 

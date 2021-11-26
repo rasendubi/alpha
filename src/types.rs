@@ -23,6 +23,8 @@ pub use self::svec::*;
 pub use self::symbol::*;
 pub use self::void::*;
 
+pub use crate::gc::{set_type, type_of};
+
 use crate::gc;
 
 pub type AnyPtr = *const AlphaValue;
@@ -51,7 +53,7 @@ pub trait AlphaDataType: std::fmt::Debug + std::fmt::Display {
     fn trace_pointers(&mut self, trace_ptr: unsafe fn(*mut AnyPtrMut) -> bool) {
         unsafe {
             let ptr = self as *mut Self;
-            let ty = get_typetag(ptr); // self datatype
+            let ty = type_of(ptr); // self datatype
             let ptr_offsets = (*ty).pointers();
             for offset in ptr_offsets {
                 let field = (ptr as *mut u8).add(*offset) as *mut AnyPtrMut;
@@ -59,54 +61,4 @@ pub trait AlphaDataType: std::fmt::Debug + std::fmt::Display {
             }
         }
     }
-}
-
-pub unsafe fn set_typetag<T>(ptr: *mut T, typetag: *const DataType) {
-    *typetag_ptr(ptr) = typetag;
-    debug_assert_ne!(
-        (typetag as usize),
-        0x1,
-        "set_typetag(): trying to move out {:p} -> 0x0",
-        ptr
-    );
-    debug_assert!(
-        // early init yet
-        DATATYPE_T.load().is_null() ||
-            // moved out
-            (typetag as usize) & 0x1 == 0x1 ||
-            (get_typetag(typetag) as usize) & 0x1 == 0x1 ||
-            get_typetag(typetag) == DATATYPE_T.load(),
-        "set_typetag() is used to set invalid tag: {:p}",
-        typetag
-    )
-}
-
-pub unsafe fn get_typetag<T: ?Sized>(ptr: *const T) -> *const DataType {
-    let typetag = *typetag_ptr(ptr);
-    if !((typetag as usize) & 0x1 == 0x1
-        || (*typetag_ptr(typetag) as usize) & 0x1 == 0x1
-        || *typetag_ptr(typetag) == DATATYPE_T.load())
-    {
-        let ty = typetag;
-        let ty_ty = *typetag_ptr(ty);
-        tracing::error!("get_typetag({:p}), ty={:p}, ty_ty={:p}", ptr, ty, ty_ty);
-        // gc::debug_ptr(ptr.cast());
-        // gc::debug_ptr(ty.cast());
-        // gc::debug_ptr(ty_ty.cast());
-        panic!(
-            "typetag is neither moved out nor a type: typetag={:p}",
-            typetag
-        )
-    }
-    typetag
-}
-
-pub unsafe fn typetag_ptr<T: ?Sized>(ptr: *const T) -> *mut *const DataType {
-    debug_assert_eq!(
-        (ptr as *const () as usize) % 8,
-        0,
-        "typetag_ptr() is called on unaligned pointer: {:p}",
-        ptr
-    );
-    (ptr as *mut *const DataType).sub(1)
 }

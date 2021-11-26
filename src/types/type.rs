@@ -18,11 +18,11 @@ impl Type {
     #[tracing::instrument("Type::new")]
     pub unsafe fn new(t: *const DataType) -> *const Type {
         assert_ne!(t, std::ptr::null());
-        debug_assert_eq!(get_typetag(t), DATATYPE_T.load());
+        debug_assert_eq!(type_of(t), DATATYPE_T.load());
 
         gc_box!(t);
         let this = gc::allocate(std::mem::size_of::<Self>()) as *mut Self;
-        set_typetag(this, Self::typetag());
+        set_type(this, Self::typetag());
         *this = Type { t: t.load() };
         trace!("= {:?}", this);
         this

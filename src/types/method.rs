@@ -25,7 +25,7 @@ impl Method {
     pub unsafe fn new(signature: *const SVec, instance: GenericFn) -> *const Self {
         gc_box!(signature);
         let this = gc::allocate(size_of::<Method>()) as *mut Self;
-        set_typetag(this, METHOD_T.load());
+        set_type(this, METHOD_T.load());
         *this = Method {
             signature: signature.load(),
             instance,
@@ -139,8 +139,8 @@ pub(super) fn signature_equal(a_signature: *const SVec, b_signature: *const SVec
 
 fn param_specifier_equal(a: AnyPtr, b: AnyPtr) -> bool {
     unsafe {
-        let a_kind = get_typetag(a);
-        let b_kind = get_typetag(b);
+        let a_kind = type_of(a);
+        let b_kind = type_of(b);
         if a_kind != b_kind {
             false
         } else if a_kind == TYPE_T.load() {
@@ -156,12 +156,12 @@ fn param_specifier_equal(a: AnyPtr, b: AnyPtr) -> bool {
 #[tracing::instrument]
 fn param_specifier_is_applicable(ps: AnyPtr, v: AnyPtr) -> bool {
     let result = unsafe {
-        let ps_kind = get_typetag(ps);
+        let ps_kind = type_of(ps);
         if ps_kind == TYPE_T.load() {
             let t = ps as *const Type;
             v == (*t).t as AnyPtr
         } else if ps_kind == DATATYPE_T.load() {
-            let cpls = get_cpl(get_typetag(v));
+            let cpls = get_cpl(type_of(v));
             cpls.contains(&ps)
         } else {
             panic!("wrong type for parameter specifier: {:?}", ps_kind);
@@ -181,8 +181,8 @@ fn param_specifier_is_applicable(ps: AnyPtr, v: AnyPtr) -> bool {
 /// Returns `true` if `a` is strictly more specific than `b`.
 fn param_specifier_is_more_specific(a: AnyPtr, b: AnyPtr) -> bool {
     unsafe {
-        let a_kind = get_typetag(a);
-        let b_kind = get_typetag(b);
+        let a_kind = type_of(a);
+        let b_kind = type_of(b);
         if a_kind == TYPE_T.load() {
             // might be not true, but good enough for the Method::is_subtype_of().
             true

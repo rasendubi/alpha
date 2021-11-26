@@ -183,7 +183,7 @@ impl SymbolNode {
         unsafe {
             let size = s.len();
             let ptr = gc::allocate_perm(size_of::<SymbolNode>() + size + 1) as *mut SymbolNode;
-            set_typetag(ptr, SYMBOL_T.load());
+            set_type(ptr, SYMBOL_T.load());
             let hash = Self::str_hash(s);
             *ptr = SymbolNode {
                 hash,
