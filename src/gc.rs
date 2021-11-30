@@ -413,7 +413,7 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn nothing(_n_args: i64, _args: *const AnyPtr) -> AnyPtr {
+    unsafe extern "C" fn nothing(_args: *const SVec) -> AnyPtr {
         VOID.load().cast()
     }
 

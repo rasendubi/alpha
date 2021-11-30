@@ -124,7 +124,9 @@ impl SVec {
 
 impl std::fmt::Debug for SVec {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        write!(f, "SVec ")?;
+        write!(f, "SVec<{}> ", self.len)?;
+        f.debug_list().entries(self.elements()).finish()?;
+        write!(f, "=")?;
         f.debug_list()
             .entries(self.elements().iter().map(|x| unsafe { &**x }))
             .finish()

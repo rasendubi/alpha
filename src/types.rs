@@ -29,7 +29,7 @@ use crate::gc;
 
 pub type AnyPtr = *const AlphaValue;
 pub type AnyPtrMut = *mut AlphaValue;
-pub type GenericFn = unsafe extern "C" fn(i64, *const AnyPtr) -> AnyPtr;
+pub type GenericFn = unsafe extern "C" fn(*const SVec) -> AnyPtr;
 
 /// AlphaType should be implemented for all Rust types that are exposed to Alpha.
 ///

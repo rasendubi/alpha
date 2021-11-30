@@ -13,6 +13,9 @@ use crate::ast::types::{TypeDef, TypeDescriptor};
 use crate::env::Env;
 use crate::execution_session::EnvValue;
 use crate::symbol;
+use crate::types::*;
+
+use std::mem::size_of;
 
 pub struct Compiler<'a, 'ctx> {
     context: &'ctx Context,
@@ -36,7 +39,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     ///
     /// declare %Any* @gc_allocate(i64 %size)
     ///
-    /// declare %Any* @dispatch(%Any* %fun, i64 %n_args, %Any** %args)
+    /// declare %Any* @dispatch(%SVec* %args)
     ///
     /// declare %Any* @mk_str(i8* %ptr, i64 len)
     /// ```
@@ -121,21 +124,20 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
         let alloca = self.prologue_builder.build_alloca(any_ptr_t, name);
 
-        let gcroot = self.get_llvm_gcroot();
         let ptr_t = self
             .context
             .int_type(8)
             .pointer_type(AddressSpace::Generic)
             .pointer_type(AddressSpace::Generic);
-        let alloca_as_ptr = self.prologue_builder.build_pointer_cast(
-            alloca,
-            ptr_t,
-            &(name.to_string() + "_as_gcroot"),
-        );
+        let gcroot =
+            self.prologue_builder
+                .build_pointer_cast(alloca, ptr_t, &format!("{}.gcroot", name));
+
+        let llvm_gcroot = self.get_llvm_gcroot();
         self.prologue_builder.build_call(
-            gcroot,
+            llvm_gcroot,
             &[
-                alloca_as_ptr,
+                gcroot,
                 self.context
                     .int_type(8)
                     .pointer_type(AddressSpace::Generic)
@@ -380,16 +382,10 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             .get_named_struct("Any")
             .unwrap()
             .pointer_type(AddressSpace::Generic);
-        let i64_t = self.context.int_type(64);
 
-        let ret_type = ptr_t;
-        let params_types = vec![
-            /* n_args: */ i64_t,
-            /* args: */ ptr_t.pointer_type(AddressSpace::Generic),
-        ];
-        let fn_type = ret_type.function_type(&params_types, false);
+        let fn_t = ptr_t.function_type(&[ptr_t], false);
 
-        let fn_val = self.module.add_function(&name, fn_type);
+        let fn_val = self.module.add_function(&name, fn_t);
         fn_val.set_gc("shadow-stack");
 
         Ok(fn_val)
@@ -418,10 +414,8 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         fn_val: Value,
     ) -> Result<Env<'e, EnvValue>> {
         let mut params = fn_val.get_param_iter();
-        let n_args = params.next().unwrap();
         let args = params.next().unwrap();
 
-        n_args.set_name("n_args");
         args.set_name("args");
 
         let any_ptr_t = self
@@ -433,8 +427,8 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
 
         let args = self.prologue_builder.build_pointer_cast(
             args,
-            i64_t.pointer_type(AddressSpace::Generic),
-            "args_cells",
+            any_ptr_t.pointer_type(AddressSpace::Generic),
+            "args.elements.-1",
         );
 
         let mut env = Env::new(Some(env));
@@ -443,15 +437,12 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             let param_name = param_symbol.as_str();
             let p = self.prologue_builder.build_gep(
                 args,
-                &[i64_t.const_int((i + 1) as u64, false)],
-                param_name,
+                &[i64_t.const_int((i + 2) as u64, false)],
+                &format!("args.{}", i + 1),
             );
-            let p = self.prologue_builder.build_pointer_cast(
-                p,
-                any_ptr_t.pointer_type(AddressSpace::Generic),
-                param_name,
-            );
-            let p = self.prologue_builder.build_load(p, param_name);
+            let p = self
+                .prologue_builder
+                .build_load(p, &format!("{}.in", param_name));
             let gcroot = self.build_gcroot(param_name);
             self.prologue_builder.build_store(gcroot, p);
             env.insert(param_symbol, EnvValue::Local(gcroot));
@@ -560,10 +551,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                     args.push(self.compile_exp(env, arg)?);
                 }
 
-                let args = args
-                    .iter()
-                    .map(|arg| self.load_value(*arg))
-                    .collect::<Vec<_>>();
                 let res = self.build_call(f, &args, "tmp")?;
                 self.builder.build_store(place, res);
 
@@ -584,36 +571,59 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         Ok(result)
     }
 
-    fn build_call(&mut self, f: Value, args: &[Value], name: &str) -> Result<Value> {
+    fn build_svec(&mut self, elements: &[Value], name: &str) -> Result<Value> {
+        let i64_t = self.context.int_type(64);
         let any_ptr_t = self
             .context
             .get_named_struct("Any")
             .unwrap()
             .pointer_type(AddressSpace::Generic);
-        let i64_t = self.context.int_type(64);
 
-        let size = i64_t.const_int((args.len() + 1) as u64, false);
-        let args_ptr = self.builder.build_array_alloca(any_ptr_t, size, "args");
-
-        let f = self.builder.build_load(f, "f_ptr");
-        self.builder.build_store(
-            self.builder
-                .build_gep(args_ptr, &[i64_t.const_int(0 as u64, false)], "arg_ptr"),
-            self.builder.build_pointer_cast(f, any_ptr_t, "f_ptr"),
+        let svec = self.build_allocate(
+            (size_of::<SVec>() + size_of::<AnyPtr>() * elements.len()) as u64,
+            name,
         );
 
-        for (i, arg) in args.iter().enumerate() {
-            let a_ptr = self.builder.build_gep(
-                args_ptr,
+        let svec_t = self.module.get_global("SVec").unwrap();
+        let svec_t = self.builder.build_load(svec_t, "SVec");
+        self.build_set_typetag(svec, svec_t);
+
+        let len_ptr = self.builder.build_pointer_cast(
+            svec,
+            i64_t.pointer_type(AddressSpace::Generic),
+            &(name.to_string() + ".len"),
+        );
+        self.builder
+            .build_store(len_ptr, i64_t.const_int(elements.len() as u64, false));
+
+        let elements_ptr = self.builder.build_pointer_cast(
+            svec,
+            any_ptr_t.pointer_type(AddressSpace::Generic),
+            &(name.to_string() + ".elements"),
+        );
+        for (i, v) in elements.iter().enumerate() {
+            let field_ptr = self.builder.build_gep(
+                elements_ptr,
                 &[i64_t.const_int((i + 1) as u64, false)],
-                "arg_ptr",
+                &(format!("{}.{}", name, i)),
             );
-            self.builder.build_store(a_ptr, *arg);
+            let value = self.load_value(*v);
+            self.builder.build_store(field_ptr, value);
         }
+
+        Ok(svec)
+    }
+
+    fn build_call(&mut self, f: Value, args: &[Value], name: &str) -> Result<Value> {
+        let mut actual_arguments = Vec::new();
+        actual_arguments.push(f);
+        actual_arguments.extend_from_slice(args);
+
+        let svec = self.build_svec(&actual_arguments, &format!("{}.args", name))?;
 
         let dispatch = self.module.get_function("dispatch").unwrap();
 
-        let result = self.builder.build_call(dispatch, &[size, args_ptr], name);
+        let result = self.builder.build_call(dispatch, &[svec], name);
 
         Ok(result)
     }

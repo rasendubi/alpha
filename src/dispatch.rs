@@ -3,7 +3,13 @@ use crate::types::*;
 use tracing::{error, trace};
 
 #[tracing::instrument]
-pub unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
+pub unsafe extern "C" fn dispatch(args: *const SVec) -> AnyPtr {
+    trace!("dispatch({:#?})", *args);
+    let f = dispatch_select(args);
+    f(args)
+}
+
+pub unsafe fn dispatch_select(args: *const SVec) -> GenericFn {
     #[allow(unused_must_use)] // ignore write!() errors
     fn format_signature(args_slice: &[*const AlphaValue]) -> String {
         use std::fmt::Write;
@@ -24,8 +30,7 @@ pub unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
         sig
     }
 
-    let args_slice = std::slice::from_raw_parts(args, n_args as usize);
-    trace!("dispatch: {:?}", args_slice);
+    let args_slice = (*args).elements();
 
     let f = args_slice[0];
 
@@ -67,7 +72,7 @@ pub unsafe extern "C" fn dispatch(n_args: i64, args: *const AnyPtr) -> AnyPtr {
     match selected_method {
         Some(method) => {
             trace!("calling found method: {:?}", *method);
-            (method.instance)(n_args, args)
+            return method.instance;
         }
         None => {
             error!(

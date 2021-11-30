@@ -202,13 +202,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let any_ptr_t = any_t.pointer_type(AddressSpace::Generic);
         let i8_t = self.context.context().int_type(8);
         let i64_t = self.context.context().int_type(64);
-        let fn_t = any_ptr_t.function_type(
-            &[
-                /* n_args: */ i64_t,
-                /* args: */ any_ptr_t.pointer_type(AddressSpace::Generic),
-            ],
-            false,
-        );
+        let fn_t = any_ptr_t.function_type(&[/* args: */ any_ptr_t], false);
 
         self.globals.add_function(
             "gc_allocate",
@@ -231,6 +225,12 @@ impl<'ctx> ExecutionSession<'ctx> {
             .define_symbol("DataType", DATATYPE_T.as_ref() as *const _ as usize)?;
         self.global_env
             .insert(symbol("DataType"), EnvValue::Global("DataType".to_string()));
+
+        self.globals.add_global("SVec", datatype_ptr_t);
+        self.jit
+            .define_symbol("SVec", SVEC_T.as_ref() as *const _ as usize)?;
+        self.global_env
+            .insert(symbol("SVec"), EnvValue::Global("SVec".to_string()));
 
         self.globals.add_global("Any", datatype_ptr_t);
         self.jit
@@ -770,7 +770,7 @@ impl<'ctx> ExecutionSession<'ctx> {
         let tracker = self.load_module_with_tracker(module)?;
         let fun = self.jit.lookup::<GenericFn>(&name)?;
         unsafe {
-            fun(0, std::ptr::null());
+            fun(std::ptr::null());
         }
 
         // This was just an anonymous function. We can unload the module as it is no longer
