@@ -76,6 +76,19 @@ impl Value {
         assert_eq!(self.kind(), ValueKind::LLVMConstantIntValueKind);
         unsafe { Value::new(core::LLVMConstIntToPtr(self.0, type_.0)) }
     }
+    pub fn const_ptr_to_int(&self, to_type: Type) -> Value {
+        unsafe { Value::new(core::LLVMConstPtrToInt(self.0, to_type.0)) }
+    }
+
+    pub fn const_add(&self, rhs: Value) -> Value {
+        unsafe { Value::new(core::LLVMConstAdd(self.0, rhs.0)) }
+    }
+    pub fn const_gep(&self, indices: &[Value]) -> Value {
+        let mut indices = indices.iter().map(|v| v.0).collect::<Vec<_>>();
+        let num_indices = indices.len() as u32;
+        let indices = indices.as_mut_ptr();
+        unsafe { Value::new(core::LLVMConstGEP(self.0, indices, num_indices)) }
+    }
 
     pub fn global_set_initializer(&self, init: Value) {
         assert_eq!(self.kind(), ValueKind::LLVMGlobalVariableValueKind);

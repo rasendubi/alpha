@@ -28,6 +28,7 @@ region = "3.0.0"
 once_cell = "1.8.0"
 alloca = "0.3.3"
 tracing = "0.1.29"
+indenter = "0.3.3"
 
 # bin dependencies
 tracing-subscriber = { version = "0.3.1", features = ["tracing-log", "env-filter"] }

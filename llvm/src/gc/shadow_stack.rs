@@ -1,6 +1,6 @@
 //! Integration for LLVM's shadow-stack GC strategy.
 //!
-//! See https://llvm.org/docs/GarbageCollection.html#the-shadow-stack-gc for more information.
+//! See <https://llvm.org/docs/GarbageCollection.html#the-shadow-stack-gc> for more information.
 use std::slice;
 
 #[derive(Debug)]

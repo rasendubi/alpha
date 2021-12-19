@@ -116,6 +116,27 @@ impl Module {
         }
     }
 
+    /// Verify the module and return a string description on error.
+    pub fn verify(&self) -> Result<(), LLVMString> {
+        unsafe {
+            use llvm_sys::analysis::*;
+            use std::os::raw::c_char;
+
+            let mut msg: *mut c_char = std::ptr::null_mut();
+            let res = LLVMVerifyModule(
+                self.0,
+                LLVMVerifierFailureAction::LLVMReturnStatusAction,
+                &mut msg,
+            );
+
+            if res == 0 {
+                Ok(())
+            } else {
+                Err(LLVMString::new(msg))
+            }
+        }
+    }
+
     /// Dump a representation of a module to stderr.
     ///
     /// ```

@@ -115,6 +115,10 @@ impl Type {
         unsafe { Type::new(core::LLVMGetElementType(self.0)) }
     }
 
+    pub fn array_type(&self, element_count: u32) -> Type {
+        unsafe { Type::new(core::LLVMArrayType(self.0, element_count)) }
+    }
+
     pub fn const_null(&self) -> Value {
         assert_eq!(self.kind(), TypeKind::LLVMPointerTypeKind);
         unsafe { Value::new(core::LLVMConstNull(self.0)) }
