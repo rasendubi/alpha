@@ -163,8 +163,11 @@ impl<'a> Ctx<'a> {
             EExp::Function(f) => {
                 // global fn -> add method
                 let fn_t = self.ensure_fn_t(global_env, f.prototype.name)?;
-                let method = self.compile_global_fn(global_env, f)?;
-                self.module.decls.push(Decl::AddMethod { ty: fn_t, method });
+                if f.body.is_some() {
+                    // if there is no body -> declare the function, but do not attach any methods
+                    let method = self.compile_global_fn(global_env, f)?;
+                    self.module.decls.push(Decl::AddMethod { ty: fn_t, method });
+                }
             }
             e => {
                 // some expression -> compile anonymous fn

@@ -202,68 +202,54 @@ fn lower_type_specifier(exp: &Exp) -> Result<TypeSpecifier> {
 }
 
 fn lower_function(sexp: &SExp) -> Result<Function> {
-    let v = match sexp {
-        SExp::List(v) if v[0] == SExp::Symbol("call") && v[1] == SExp::Symbol("=") => v,
-        _ => bail!("'fn' should be followed by function assignment"),
+    let f = match sexp {
+        // (:call := (:call fn args) body)
+        SExp::List(v) if v[0] == SExp::Symbol("call") && v[1] == SExp::Symbol("=") => {
+            let prototype = lower_function_prototype(&v[2])?;
+            let body = Some(Box::new(lower_sexp(&v[3])?));
+            Function { prototype, body }
+        }
+        // (:call fn args)
+        SExp::List(v) if v[0] == SExp::Symbol("call") => {
+            let prototype = lower_function_prototype(sexp)?;
+            let body = None;
+            Function { prototype, body }
+        }
+        _ => bail!("unable to parse 'fn' form"),
     };
 
-    let prototype = lower_function_prototype(&v[2])?;
-    let body = Some(Box::new(lower_sexp(&v[3])?));
-    Ok(Function { prototype, body })
+    Ok(f)
 }
 
 fn lower_function_prototype(sexp: &SExp) -> Result<FunctionPrototype> {
-    // (:fn (:call name params...) body)
-    // (:fn (:call :: (:call name params...) result_type) body)
-    let proto = sexp.as_list().ok_or_else(|| {
-        anyhow!(
-            "function definition should start with call-like sexp, given: {}",
-            sexp
-        )
-    })?;
-    if proto[0].as_symbol().unwrap() != "call" {
-        bail!(
-            "function definition should start with call-like sexp, it starts with: {}",
-            proto[0]
-        );
-    }
-
-    let head = proto[1]
-        .as_symbol()
-        .ok_or_else(|| anyhow!("function name should be a symbol, given: {}", proto[1]))?;
-    let (proto, result_type) = if head == ":" {
-        let result_type = proto[3].as_symbol().ok_or_else(|| {
-            anyhow!(
-                "function return types should be a symbol, {} given",
-                proto[3]
-            )
-        })?;
-        let proto = proto[2].as_list().ok_or_else(|| {
-            anyhow!(
-                "function definition should start with call-like sexp, given: {}",
-                sexp
-            )
-        })?;
-        if proto[0].as_symbol().unwrap() != "call" {
-            bail!(
-                "function definition should start with call-like sexp, it starts with: {}",
-                proto[0]
-            );
+    let (proto, result_type) = match sexp {
+        // (:call :: (:call name params...) result_type)
+        SExp::List(v) if v[0] == SExp::Symbol("call") && v[1] == SExp::Symbol(":") => {
+            let result_type = v[3]
+                .as_symbol()
+                .ok_or_else(|| anyhow!("result type must be a symbol, given: {}", v[3]))?;
+            (&v[2], symbol(result_type))
         }
-        if proto[1].as_symbol().is_none() {
-            bail!("function name should be a symbol, given: {}", proto[1]);
-        }
-
-        (proto, symbol(result_type))
-    } else {
-        (proto, symbol("Any"))
+        // (:call name params...)
+        SExp::List(v) if v[0] == SExp::Symbol("call") => (sexp, symbol("Any")),
+        _ => bail!("unable to parse function prototype: {}", sexp),
     };
 
-    let name = symbol(head);
-    let mut params = Vec::new();
-    for param in &proto[2..] {
-        params.push(lower_function_parameter(param)?);
-    }
+    let (name, params) = match proto {
+        SExp::List(v) if v[0] == SExp::Symbol("call") => {
+            let name = v[1]
+                .as_symbol()
+                .ok_or_else(|| anyhow!("function name must be a symbol, given: {}", v[1]))?;
+
+            let mut params = Vec::new();
+            for param in &v[2..] {
+                params.push(lower_function_parameter(param)?);
+            }
+
+            (symbol(name), params)
+        }
+        _ => bail!("unable to parse function prototype: {}", sexp),
+    };
 
     Ok(FunctionPrototype {
         name,
