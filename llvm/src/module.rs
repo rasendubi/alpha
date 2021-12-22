@@ -91,6 +91,26 @@ impl Module {
         }
     }
 
+    pub fn add_alias(&self, name: &str, ty: Type, aliasee: Value) -> Value {
+        let name = CString::new(name).unwrap();
+        eprintln!("add_alias({:?}, {:?}, {:?})", name, ty, aliasee);
+        unsafe { Value::new(core::LLVMAddAlias(self.0, ty.0, aliasee.0, name.as_ptr())) }
+    }
+    pub fn get_alias(&self, name: &str) -> Option<Value> {
+        unsafe {
+            // IMPORTANT: even though `LLVMGetNamedGlobalAlias` accepts a pointer and length, the
+            // length is actually not used and name must be NUL-terminated.
+            let len = name.len();
+            let name = CString::new(name).unwrap();
+            let res = core::LLVMGetNamedGlobalAlias(self.0, name.as_ptr(), len);
+            if res.is_null() {
+                None
+            } else {
+                Some(Value::new(res))
+            }
+        }
+    }
+
     pub fn add_global(&self, name: &str, type_: Type) -> Value {
         let name = CString::new(name).unwrap();
         unsafe { Value::new(core::LLVMAddGlobal(self.0, type_.0, name.as_ptr())) }
@@ -113,6 +133,27 @@ impl Module {
             module: self.0,
             g: std::ptr::null_mut(),
             start: true,
+        }
+    }
+
+    /// Verify the module and return a string description on error.
+    pub fn verify(&self) -> Result<(), LLVMString> {
+        unsafe {
+            use llvm_sys::analysis::*;
+            use std::os::raw::c_char;
+
+            let mut msg: *mut c_char = std::ptr::null_mut();
+            let res = LLVMVerifyModule(
+                self.0,
+                LLVMVerifierFailureAction::LLVMReturnStatusAction,
+                &mut msg,
+            );
+
+            if res == 0 {
+                Ok(())
+            } else {
+                Err(LLVMString::new(msg))
+            }
         }
     }
 

@@ -49,6 +49,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    es.set_print_results(true);
+
     let h = InputValidator {
         brackets: MatchingBracketValidator::new(),
     };

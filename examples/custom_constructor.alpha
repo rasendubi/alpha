@@ -9,9 +9,9 @@ fn print(r: Rect) = {
 fn Rect(x) = Rect(x, x)
 fn Rect() = Rect(0, 0)
 
-Rect(2, 3).print()
-Rect(13).print()
-Rect().print()
+Rect(2, 3).println()
+Rect(13).println()
+Rect().println()
 
 # expected stdout:
 # 2x3

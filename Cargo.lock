@@ -46,6 +46,7 @@ dependencies = [
  "clap",
  "ctor",
  "goldentests",
+ "indenter",
  "llvm",
  "logos",
  "once_cell",
@@ -297,6 +298,12 @@ checksum = "62b467343b94ba476dcb2500d242dadbb39557df889310ac77c5d99100aaac33"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "indenter"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce23b50ad8242c51a442f3ff322d56b02f08852c77e4c0b4d3fd684abc89c683"
 
 [[package]]
 name = "indexmap"

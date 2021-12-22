@@ -71,7 +71,7 @@ fn dump_symbols() {
     dump(0, SYMBOLS_ROOT.load(AtomicOrdering::SeqCst))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct Symbol {
     pub(crate) node: *const SymbolNode,

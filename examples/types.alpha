@@ -2,24 +2,21 @@ type X = { x }
 
 # empty constructor
 type Empty = {}
-{
-  Empty()
-  void
-}
+Empty()
 
 # constructor with argument
 type Box = { value }
-Box(12).value
+Box(12).value.println()
 
 # accessors
 type Pair = { x, y }
-Pair(2, 3).x
-Pair(2, 3).y
+Pair(2, 3).x.println()
+Pair(2, 3).y.println()
 
 # inlined fields
 type PairF64 = { x: f64, y: f64 }
-PairF64(2.2, 3.3).x
-PairF64(2.2, 3.3).y
+PairF64(2.2, 3.3).x.println()
+PairF64(2.2, 3.3).y.println()
 
 # expected stdout:
 # 12

@@ -8,7 +8,7 @@ fn print(p: Point) = {
   print(" }")
 }
 
-Point(2, 12)
+Point(2, 12).println()
 
 # expected stdout:
 # { x = 2, y = 12 }
