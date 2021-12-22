@@ -183,7 +183,7 @@ fn lower_type_specifier(exp: &Exp) -> Result<TypeSpecifier> {
                 let (name, typ) = match f {
                     Exp::Symbol(s) => (*s, symbol("Any")),
 
-                    Exp::Call(Call { fun, args }) if &**fun == &Exp::Symbol(symbol(":")) => {
+                    Exp::Call(Call { fun, args }) if **fun == Exp::Symbol(symbol(":")) => {
                         let name = match args.get(0) {
                             Some(Exp::Symbol(s)) => s,
                             e => bail!("parameter name must be a symbol, {:?} given", e),

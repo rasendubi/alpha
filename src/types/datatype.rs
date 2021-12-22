@@ -25,6 +25,8 @@ impl DataType {
     /// # Safety
     /// This function allocates GC memory. Therefore all GC values must be rooted before calling
     /// this function.
+    // DEAD CODE: this used to be useful before HIR refactoring. Unused since 2021-12-22.
+    #[allow(dead_code)]
     #[tracing::instrument("DataType::new")]
     pub unsafe fn new(
         name: Symbol,
@@ -58,6 +60,9 @@ impl DataType {
     /// # Safety
     /// This function allocates GC memory. Therefore all GC values must be rooted before calling
     /// this function.
+    // DEAD CODE: this used to be useful before HIR refactoring. Unused since 2021-12-22.
+    #[allow(dead_code)]
+    #[tracing::instrument("DataType::new_abstract")]
     pub unsafe fn new_abstract(name: Symbol, supertype: *const DataType) -> *const DataType {
         gc_box!(supertype);
         let this = Self::allocate(0);
@@ -78,13 +83,13 @@ impl DataType {
     /// this function.
     ///
     /// This function returns uninitialized DataType.
-    pub unsafe fn allocate(n_ptrs: usize) -> *mut DataType {
+    unsafe fn allocate(n_ptrs: usize) -> *mut DataType {
         let this = gc::allocate(size_of::<DataType>() + n_ptrs * size_of::<usize>());
         set_type(this, DATATYPE_T.load());
         this.cast()
     }
 
-    pub unsafe fn allocate_perm(n_ptrs: usize) -> *mut DataType {
+    pub(super) unsafe fn allocate_perm(n_ptrs: usize) -> *mut DataType {
         let this = gc::allocate_perm(size_of::<DataType>() + n_ptrs * size_of::<usize>());
         set_type(this, DATATYPE_T.load());
         this.cast()
@@ -166,6 +171,7 @@ impl AlphaType for DataType {
     }
 
     fn pointers() -> &'static [usize] {
+        #[allow(clippy::identity_op)]
         static PTRS: [usize; 3] = [
             // very much unsafe and relies on me knowing how repr(C) works
             1 * 8, // name

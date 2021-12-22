@@ -237,7 +237,7 @@ impl<'a> Ctx<'a> {
             .chain(f.params.iter().map(|p| self.lookup_type(env, p.typ)))
             .collect::<Result<Vec<_>>>()?;
         let retty = self.lookup_type(env, f.result_type)?;
-        let ty = Type::Fn(fn_params, Box::new(retty.clone()));
+        let ty = Type::Fn(fn_params, Box::new(retty));
 
         Ok(ty)
     }
@@ -279,7 +279,7 @@ impl<'a> Ctx<'a> {
                     env.insert(p.name, *v);
                 }
 
-                let body = Box::new(self.compile_exp(&env, &body)?);
+                let body = Box::new(self.compile_exp(&env, body)?);
 
                 let f = Fn {
                     params: fn_params,
@@ -311,8 +311,7 @@ impl<'a> Ctx<'a> {
                     ty: Type::T(*ANY_T_V),
                     value: f_value,
                     e: Box::new(self.compile_exps(env, args, |_env, args| {
-                        let mut actual_args = Vec::new();
-                        actual_args.push(f_v);
+                        let mut actual_args = vec![f_v];
                         actual_args.extend_from_slice(args);
 
                         let args_v = genvar();

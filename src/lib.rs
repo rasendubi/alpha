@@ -1,3 +1,4 @@
+#![allow(clippy::new_without_default)]
 mod ast;
 mod dispatch;
 mod env;

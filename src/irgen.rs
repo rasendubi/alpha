@@ -174,17 +174,15 @@ impl<'a, 'ctx> IrGen<'a, 'ctx> {
 
     fn declare_types(&mut self) -> Result<()> {
         for d in &self.input.decls {
-            match d {
-                hir::Decl::Global {
-                    name: _,
-                    v,
-                    ty,
-                    value: Some(hir::Exp::DataType(typedef)),
-                } => {
-                    assert_eq!(ty, &hir::Type::T(*hir::DATATYPE_T_V));
-                    self.declare_type(*v, typedef)?;
-                }
-                _ => {}
+            if let hir::Decl::Global {
+                name: _,
+                v,
+                ty,
+                value: Some(hir::Exp::DataType(typedef)),
+            } = d
+            {
+                assert_eq!(ty, &hir::Type::T(*hir::DATATYPE_T_V));
+                self.declare_type(*v, typedef)?;
             }
         }
         Ok(())
@@ -192,39 +190,37 @@ impl<'a, 'ctx> IrGen<'a, 'ctx> {
 
     fn declare_globals(&mut self) -> Result<()> {
         for d in &self.input.decls {
-            match d {
-                hir::Decl::Global {
-                    name: _,
-                    v,
-                    ty,
-                    value,
-                } => {
-                    let name = Self::var_to_global_name(*v);
-                    if get_any_global(&self.module, &name).is_some() {
-                        // already declared
-                    } else {
-                        let ty = self.resolve_type(ty)?;
-                        match value {
-                            Some(hir::Exp::Fn(..)) => {
-                                let f = self.module.add_function(&name, ty);
-                                f.set_gc("shadow-stack");
-                            }
-                            Some(hir::Exp::GlobalRef(..)) => {
-                                // Do nothing.
-                                //
-                                // GlobalRef is used to declare an alias—they are resolved in
-                                // `var_place()`.
-                            }
-                            value => {
-                                let g = self.module.add_global(&name, ty);
-                                if value.is_some() {
-                                    g.global_set_initializer(ty.const_null());
-                                }
+            if let hir::Decl::Global {
+                name: _,
+                v,
+                ty,
+                value,
+            } = d
+            {
+                let name = Self::var_to_global_name(*v);
+                if get_any_global(&self.module, &name).is_some() {
+                    // already declared
+                } else {
+                    let ty = self.resolve_type(ty)?;
+                    match value {
+                        Some(hir::Exp::Fn(..)) => {
+                            let f = self.module.add_function(&name, ty);
+                            f.set_gc("shadow-stack");
+                        }
+                        Some(hir::Exp::GlobalRef(..)) => {
+                            // Do nothing.
+                            //
+                            // GlobalRef is used to declare an alias—they are resolved in
+                            // `var_place()`.
+                        }
+                        value => {
+                            let g = self.module.add_global(&name, ty);
+                            if value.is_some() {
+                                g.global_set_initializer(ty.const_null());
                             }
                         }
                     }
                 }
-                _ => {}
             }
         }
         Ok(())
@@ -232,20 +228,18 @@ impl<'a, 'ctx> IrGen<'a, 'ctx> {
 
     fn compile_functions(&mut self) -> Result<()> {
         for d in &self.input.decls {
-            match d {
-                hir::Decl::Global {
-                    name: _,
-                    v,
-                    ty: _,
-                    value: Some(Exp::Fn(f)),
-                } => {
-                    let llvm_fn = self
-                        .module
-                        .get_function(&Self::var_to_global_name(*v))
-                        .expect("unable to get function");
-                    self.compile_fn(llvm_fn, f)?;
-                }
-                _ => {}
+            if let hir::Decl::Global {
+                name: _,
+                v,
+                ty: _,
+                value: Some(Exp::Fn(f)),
+            } = d
+            {
+                let llvm_fn = self
+                    .module
+                    .get_function(&Self::var_to_global_name(*v))
+                    .expect("unable to get function");
+                self.compile_fn(llvm_fn, f)?;
             }
         }
         Ok(())
@@ -417,16 +411,13 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
 
         // register methods
         for d in &self.irgen.input.decls {
-            match d {
-                hir::Decl::AddMethod { ty, method } => {
-                    let signature = self.compile_signature(*method)?;
-                    let datatype = self.var_value(*ty);
-                    let method = self.var_value(*method);
-                    let add_method = self.module.get_function("add_method").unwrap();
-                    self.builder
-                        .build_call(add_method, &[datatype, signature, method], "");
-                }
-                _ => {}
+            if let hir::Decl::AddMethod { ty, method } = d {
+                let signature = self.compile_signature(*method)?;
+                let datatype = self.var_value(*ty);
+                let method = self.var_value(*method);
+                let add_method = self.module.get_function("add_method").unwrap();
+                self.builder
+                    .build_call(add_method, &[datatype, signature, method], "");
             }
         }
 
@@ -592,8 +583,7 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
             Exp::MethodSelect { args } => {
                 let select_method = self.module.get_function("select_method").unwrap();
                 let args = self.var_value(*args);
-                let result = self.builder.build_call(select_method, &[args], name);
-                result
+                self.builder.build_call(select_method, &[args], name)
             }
             Exp::DataType(typedef) => self.compile_datatype(typedef, name)?,
             Exp::Let { v, ty: _, value, e } => {
@@ -623,13 +613,12 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
             Exp::Apply { f, args } => {
                 let f = self.var_value(*f);
                 let args = args.iter().map(|v| self.var_value(*v)).collect::<Vec<_>>();
-                let result = self.builder.build_call(f, &args, name);
-                result
+                self.builder.build_call(f, &args, name)
             }
             Exp::Fn(_) => bail!("non-top-level fn are not supported yet"),
             Exp::GlobalRef(ty, gname) => {
                 let ty = self.irgen.resolve_type(ty)?;
-                let g = get_any_global(&self.module, gname).map_or_else::<Result<_>, _, _>(
+                let g = get_any_global(self.module, gname).map_or_else::<Result<_>, _, _>(
                     || {
                         let g = if ty.kind() == TypeKind::LLVMFunctionTypeKind {
                             self.module.add_function(gname, ty)
@@ -652,7 +641,7 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
 
     /// Get or declare a global reference with `name` and type `ty`.
     fn global_ref(&mut self, name: &str, ty: Type) -> Value {
-        get_any_global(&self.module, name).unwrap_or_else(|| {
+        get_any_global(self.module, name).unwrap_or_else(|| {
             if ty.kind() == TypeKind::LLVMFunctionTypeKind {
                 self.module.add_function(name, ty)
             } else {
@@ -841,10 +830,7 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
         );
         let typetag_ptr = self.builder.build_gep(
             pptr,
-            &[self
-                .context
-                .int_type(64)
-                .const_int((-1 as i64) as u64, true)],
+            &[self.context.int_type(64).const_int(-1_i64 as u64, true)],
             &format!("{}.typetag", ptr.get_name()),
         );
         // let tag = self
@@ -873,7 +859,7 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
             Var::Local(_) => *self.vars.get(&var).unwrap(),
             Var::Global(_) => {
                 let name = IrGen::var_to_global_name(var);
-                get_any_global(&self.module, &name)
+                get_any_global(self.module, &name)
                     .or_else(|| {
                         self.irgen.input.decls.iter().find_map(|d| match d {
                             hir::Decl::Global {

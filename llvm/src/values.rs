@@ -41,9 +41,11 @@ impl Value {
         }
     }
 
-    pub unsafe fn delete_function(self) {
+    pub fn delete_function(self) {
         assert_eq!(self.kind(), ValueKind::LLVMFunctionValueKind);
-        core::LLVMDeleteFunction(self.0);
+        unsafe {
+            core::LLVMDeleteFunction(self.0);
+        }
     }
     /// Returns `true` if function is valid, `false` otherwise.
     pub fn verify_function(&self) -> bool {

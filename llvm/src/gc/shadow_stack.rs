@@ -37,6 +37,10 @@ pub type GcRootChain = *mut StackEntry<0>;
 /// Push a `frame` to [`GcRootChain`].
 ///
 /// This should be accompanied with the appropriate [`pop_gcframe`].
+///
+/// # Safety
+/// `frame` must be a valid stack entry and must be popped with `pop_gcframe` before it goes out of
+/// scope.
 #[inline(always)]
 pub unsafe fn push_gcframe(root: &mut GcRootChain, frame: *mut StackEntry<0>) {
     *root = frame;
@@ -48,6 +52,9 @@ pub unsafe fn push_gcframe(root: &mut GcRootChain, frame: *mut StackEntry<0>) {
 /// out-of-order frames pops.
 ///
 /// For unchecked version, see [`pop_gcframe_unchecked()`].
+///
+/// # Safety
+/// `frame` must point to the last pushed stack entry. This invariant is asserted in debug builds.
 #[inline(always)]
 pub unsafe fn pop_gcframe(root: &mut GcRootChain, frame: *mut StackEntry<0>) {
     debug_assert!(!root.is_null());
@@ -56,6 +63,9 @@ pub unsafe fn pop_gcframe(root: &mut GcRootChain, frame: *mut StackEntry<0>) {
 }
 
 /// Pops the last gc frame.
+///
+/// # Safety
+/// `frame` must point to the last pushed stack entry. This invariant is not asserted.
 #[inline(always)]
 pub unsafe fn pop_gcframe_unchecked(root: &mut GcRootChain) {
     *root = (**root).next;
@@ -65,6 +75,9 @@ pub unsafe fn pop_gcframe_unchecked(root: &mut GcRootChain) {
 ///
 /// The first argument of the visitor is the root, the second argument is constant metadata (can be
 /// null).
+///
+/// # Safety
+/// The GC root chain must be in valid state.
 pub unsafe fn visit_roots<Visitor>(root: GcRootChain, mut visitor: Visitor)
 where
     Visitor: FnMut(*mut *const u8, *const u8),
@@ -104,7 +117,7 @@ impl<const N: usize> FrameMap<N> {
 
 impl<const N: usize> StackEntry<N> {
     #[inline]
-    pub const unsafe fn new<const M: usize>(
+    pub const fn new<const M: usize>(
         next: *mut StackEntry<0>,
         map: *const FrameMap<M>,
         roots: [*const u8; N],
@@ -124,8 +137,7 @@ impl<const N: usize> StackEntry<N> {
     pub fn roots(&mut self) -> &mut [*const u8] {
         unsafe {
             let num_roots = (*self.map).num_roots;
-            let roots = slice::from_raw_parts_mut(self.roots.as_mut_ptr(), num_roots as usize);
-            roots
+            slice::from_raw_parts_mut(self.roots.as_mut_ptr(), num_roots as usize)
         }
     }
 }

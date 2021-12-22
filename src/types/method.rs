@@ -50,6 +50,7 @@ impl AlphaType for Method {
         }
     }
     fn pointers() -> &'static [usize] {
+        #[allow(clippy::erasing_op)]
         static PTRS: [usize; 1] = [
             0 * 8, // signature
         ];
@@ -110,10 +111,8 @@ impl Method {
                 .zip((*other.signature).elements())
                 .enumerate()
             {
-                if i != subtype_index {
-                    if param_specifier_is_more_specific(*b, *a) {
-                        return false;
-                    }
+                if i != subtype_index && param_specifier_is_more_specific(*b, *a) {
+                    return false;
                 }
             }
 
@@ -203,8 +202,7 @@ fn param_specifier_is_more_specific(a: AnyPtr, b: AnyPtr) -> bool {
 
 // CPL = class precedence list
 unsafe fn get_cpl(t: *const DataType) -> Vec<AnyPtr> {
-    let mut cpl = Vec::new();
-    cpl.push(t as AnyPtr);
+    let mut cpl = vec![t as AnyPtr];
     let mut ty = t;
     while ty != (*ty).supertype {
         ty = (*ty).supertype;

@@ -92,10 +92,6 @@ impl Symbol {
     pub fn as_cstr(&self) -> &CStr {
         unsafe { (*self.node).as_cstr() }
     }
-
-    pub fn as_anyptr(&self) -> AnyPtr {
-        self.node.cast()
-    }
 }
 
 impl PartialEq<Symbol> for Symbol {
@@ -204,8 +200,7 @@ impl SymbolNode {
     fn str_hash(s: &str) -> u64 {
         let mut h = DefaultHasher::new();
         (*s).hash(&mut h);
-        let result = h.finish();
-        result
+        h.finish()
     }
 
     /// Search for the string `s` at root `node`.
@@ -233,10 +228,10 @@ impl SymbolNode {
 
         let this = unsafe { &*this };
 
-        if hash < this.hash {
-            return Self::search_with_hash(&this.left, hash, s);
-        } else if hash > this.hash {
-            return Self::search_with_hash(&this.right, hash, s);
+        match hash.cmp(&this.hash) {
+            Ordering::Less => return Self::search_with_hash(&this.left, hash, s),
+            Ordering::Greater => return Self::search_with_hash(&this.right, hash, s),
+            _ => {}
         }
 
         // hash is equal, compare strings
@@ -276,6 +271,7 @@ impl AlphaType for SymbolNode {
         }
     }
     fn pointers() -> &'static [usize] {
+        #[allow(clippy::identity_op)]
         static PTRS: [usize; 2] = [
             // TODO: very unsafe. Use offset_from() when it becomes const
             1 * 8, // left

@@ -9,16 +9,9 @@ pub enum SExp<'a> {
 }
 
 impl<'a> SExp<'a> {
-    pub fn as_list(&self) -> Option<&[SExp]> {
-        match self {
-            SExp::List(v) => Some(&v),
-            _ => None,
-        }
-    }
-
     pub fn as_symbol(&self) -> Option<&str> {
         if let SExp::Symbol(s) = self {
-            Some(&s)
+            Some(s)
         } else {
             None
         }

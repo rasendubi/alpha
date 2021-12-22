@@ -1,3 +1,4 @@
+#![allow(clippy::new_without_default)]
 pub mod basic_block;
 pub mod builder;
 pub mod context;

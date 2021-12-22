@@ -28,7 +28,7 @@ pub unsafe extern "C" fn gc_allocate(size: u64) -> *mut u8 {
 
 pub unsafe extern "C" fn mk_str(p: *const u8, len: u64) -> AnyPtr {
     let bytes = std::slice::from_raw_parts(p, len as usize);
-    let s = std::str::from_utf8(&bytes).unwrap();
+    let s = std::str::from_utf8(bytes).unwrap();
     AlphaString::new(s) as AnyPtr
 }
 

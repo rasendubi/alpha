@@ -37,14 +37,6 @@ impl ThreadSafeContext {
     }
 }
 
-// impl Deref for ThreadSafeContext {
-//     type Target = Context;
-//
-//     fn deref(&self) -> &Context {
-//         self.context()
-//     }
-// }
-
 impl Drop for ThreadSafeContext {
     fn drop(&mut self) {
         unsafe {

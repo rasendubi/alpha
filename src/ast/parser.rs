@@ -180,22 +180,17 @@ impl<'a> Parser<'a> {
 fn parse_annotation<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // @
 
-    let mut e = Vec::new();
-    e.push(SExp::Symbol("annotation"));
-    e.push(p.parse_precedence(90)?);
-    e.push(p.parse_precedence(90)?);
-
-    Ok(SExp::List(e))
+    Ok(SExp::List(vec![
+        SExp::Symbol("annotation"),
+        p.parse_precedence(90)?,
+        p.parse_precedence(90)?,
+    ]))
 }
 
 fn parse_fn<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // fn
 
-    let mut expr = Vec::new();
-    expr.push(SExp::Symbol("fn"));
-    expr.push(p.parse_expr()?);
-
-    Ok(SExp::List(expr))
+    Ok(SExp::List(vec![SExp::Symbol("fn"), p.parse_expr()?]))
 }
 
 fn parse_type<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
@@ -240,8 +235,7 @@ fn parse_group<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
 
 fn parse_block<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // {
-    let mut v = Vec::new();
-    v.push(SExp::Symbol("block"));
+    let mut v = vec![SExp::Symbol("block")];
 
     while p.lexer.peek().is_some() && p.lexer.peek() != Some(&Token::Symbol("}")) {
         v.push(p.parse_expr()?);
@@ -299,10 +293,7 @@ fn parse_dot<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>> {
     if p.lexer.peek() == Some(&Token::Symbol("(")) {
         // parse as a function call:
         // x.f(y) => f(x, y)
-        let mut v = Vec::new();
-        v.push(SExp::Symbol("call"));
-        v.push(symbol);
-        v.push(left);
+        let mut v = vec![SExp::Symbol("call"), symbol, left];
 
         p.lexer.next(); // (
         while p.lexer.peek().is_some() && p.lexer.peek() != Some(&Token::Symbol(")")) {
@@ -327,9 +318,7 @@ fn parse_dot<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>> {
 fn parse_call<'a>(p: &mut Parser<'a>, left: SExp<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // (
 
-    let mut v = Vec::new();
-    v.push(SExp::Symbol("call"));
-    v.push(left);
+    let mut v = vec![SExp::Symbol("call"), left];
 
     while p.lexer.peek().is_some() && p.lexer.peek() != Some(&Token::Symbol(")")) {
         v.push(p.parse_expr()?);

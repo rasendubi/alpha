@@ -62,7 +62,7 @@ impl Tag {
     }
 
     fn new(ty: *const DataType) -> Tag {
-        Self { ty: ty }
+        Self { ty }
     }
 
     fn moved_out<T>(ptr: *const T) -> Tag {
@@ -227,11 +227,9 @@ pub unsafe fn maybe_collect_garbage() {
     }
 }
 
-#[tracing::instrument]
 unsafe fn data_size(ptr: AnyPtr) -> usize {
     let size = (*ptr).size();
-    let size = align_size(size);
-    size
+    align_size(size)
 }
 
 unsafe fn resolve_moved_out<T>(p: *const T) -> *const T {

@@ -198,7 +198,7 @@ mod tests {
 
         let hello = symbol("hello");
         let world = symbol("world");
-        let elements = [hello.as_anyptr(), world.as_anyptr()];
+        let elements = [hello.node.cast(), world.node.cast()];
         let v = unsafe { SVec::new(&elements) };
         unsafe {
             assert_eq!((*v).elements(), &elements);

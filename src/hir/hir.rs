@@ -1,4 +1,7 @@
 //! High-level Intermediate Representation (HIR) types.
+// CLIPPY: using write! everywhere in the Debug implementation makes mode consistent.
+#![allow(clippy::write_with_newline)]
+
 use crate::Symbol;
 
 use std::fmt::Write;

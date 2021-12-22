@@ -71,8 +71,8 @@ pub unsafe fn dispatch_select(args: *const SVec) -> GenericFn {
 
     match selected_method {
         Some(method) => {
-            trace!("calling found method: {:?}", *method);
-            return method.instance;
+            trace!("selected method: {:?}", *method);
+            method.instance
         }
         None => {
             error!(
