@@ -1,9 +1,9 @@
 fn f(x, y) = 0
 fn f(x, y: i64) = 1
 
-print(f(0, 2.0)) # 0
+println(f(0, 2.0)) # 0
 
-print(f(0, 0))   # 1
+println(f(0, 0))   # 1
 
 fn f(x: i64, y) = 2
 

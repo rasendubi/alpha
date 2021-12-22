@@ -28,6 +28,8 @@ unsafe extern "C" fn alpha_add_method(
 }
 
 pub struct ExecutionSession {
+    print_results: bool,
+
     jit: LLJIT,
     hirgen: hir::HirGen,
 
@@ -42,6 +44,7 @@ impl<'ctx> ExecutionSession {
         let jit = LLJITBuilder::new().build().unwrap();
 
         let mut es = ExecutionSession {
+            print_results: false,
             context,
             hirgen: hir::HirGen::new(),
             jit,
@@ -50,6 +53,10 @@ impl<'ctx> ExecutionSession {
         es.build_stdlib().unwrap();
 
         es
+    }
+
+    pub fn set_print_results(&mut self, print_results: bool) {
+        self.print_results = print_results;
     }
 
     /// Build Alpha standard library.
@@ -77,6 +84,8 @@ impl<'ctx> ExecutionSession {
             .insert_global(symbol("i64"), *I64_T_V, Type::T(*DATATYPE_T_V));
         self.hirgen
             .insert_global(symbol("f64"), *F64_T_V, Type::T(*DATATYPE_T_V));
+        self.hirgen
+            .insert_global(symbol("String"), *STRING_T_V, Type::T(*DATATYPE_T_V));
 
         IrGen::bootstrap_context(self.context.context());
 
@@ -123,6 +132,10 @@ impl<'ctx> ExecutionSession {
             crate::types::SVEC_EMPTY.as_ref() as *const _ as usize,
         )?;
         self.jit.define_symbol(
+            &IrGen::var_to_global_name(*hir::STRING_T_V),
+            STRING_T.as_ref() as *const _ as usize,
+        )?;
+        self.jit.define_symbol(
             &IrGen::var_to_global_name(*hir::VOID_T_V),
             VOID_T.as_ref() as *const _ as usize,
         )?;
@@ -139,31 +152,52 @@ impl<'ctx> ExecutionSession {
             I64_T.as_ref() as *const _ as usize,
         )?;
 
+        self.jit.define_symbol("type_of", alpha_type_of as usize)?;
+        self.jit.define_symbol("i64_mul", alpha_i64_mul as usize)?;
+        self.jit.define_symbol("f64_mul", alpha_f64_mul as usize)?;
+        self.jit
+            .define_symbol("print_any", alpha_print_any as usize)?;
+        self.jit
+            .define_symbol("print_void", alpha_print_void as usize)?;
+        self.jit
+            .define_symbol("print_i64", alpha_print_i64 as usize)?;
+        self.jit
+            .define_symbol("print_f64", alpha_print_f64 as usize)?;
+        self.jit
+            .define_symbol("print_string", alpha_print_string as usize)?;
+        self.jit
+            .define_symbol("print_datatype", alpha_print_datatype as usize)?;
+
         // poor man's standard library
         self.eval(
             r#"
               # type i64: Number = integer(64)
               # type f64: Number = float(64)
+
+              @intrinsic("type_of")
+              fn type_of(x: Any): DataType
+
+              @intrinsic("f64_mul")
+              fn *(x: f64, y: f64): f64
+              @intrinsic("i64_mul")
+              fn *(x: i64, y: i64): i64
+
+              @intrinsic("print_any")
+              fn print(x: Any): Void
+              @intrinsic("print_datatype")
+              fn print(x: DataType): Void
+              @intrinsic("print_void")
+              fn print(x: Void): Void
+              @intrinsic("print_i64")
+              fn print(x: i64): Void
+              @intrinsic("print_f64")
+              fn print(x: f64): Void
+              @intrinsic("print_string")
+              fn print(x: String): Void
+
+              fn println(x) = { print(x); print("\n") }
             "#,
         )?;
-
-        // TODO: define
-        // - type_of
-        // - f64_mul
-        // - i64_mul
-        // - print (any, void, i64, f64, string, datatype)
-        //   (shouldn't Any be enough?)
-        // - *
-        // - println
-
-        // self.eval(
-        //     r#"
-        //       fn *(x: f64, y: f64) = f64_mul(x, y)
-        //       fn *(x: i64, y: i64) = i64_mul(x, y)
-
-        //       fn println(x) = { print(x); print("\n") }
-        //     "#,
-        // )?;
 
         Ok(())
     }
@@ -190,10 +224,8 @@ impl<'ctx> ExecutionSession {
             let entry = self.jit.lookup::<GenericFn>(&entry_name)?;
             unsafe {
                 let result = entry(std::ptr::null());
-                if result.is_null() {
-                    println!("= null");
-                } else {
-                    println!("{:?}", &*result);
+                if self.print_results && !result.is_null() && result != VOID.load().cast() {
+                    println!("{:?}", *result);
                 }
             }
 

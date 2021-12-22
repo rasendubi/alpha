@@ -1,6 +1,6 @@
-print(2)
-print(42.13)
-print(3.2 * 2.4)
+println(2)
+println(42.13)
+println(3.2 * 2.4)
 
 # expected stdout:
 # 2

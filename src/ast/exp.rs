@@ -18,6 +18,10 @@ pub enum Exp {
     Float(f64),
     String(String),
     Block(Vec<Exp>),
+    Annotation {
+        annotation: Box<Exp>,
+        exp: Box<Exp>,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -90,6 +94,11 @@ pub fn lower_sexp(sexp: &SExp) -> Result<Exp> {
                     block.push(lower_sexp(sexp)?);
                 }
                 Exp::Block(block)
+            }
+            "annotation" => {
+                let annotation = Box::new(lower_sexp(&v[1])?);
+                let exp = Box::new(lower_sexp(&v[2])?);
+                Exp::Annotation { annotation, exp }
             }
             x => {
                 panic!("unknown sexp list head: {}", x);
@@ -209,13 +218,12 @@ fn lower_function(sexp: &SExp) -> Result<Function> {
             let body = Some(Box::new(lower_sexp(&v[3])?));
             Function { prototype, body }
         }
-        // (:call fn args)
-        SExp::List(v) if v[0] == SExp::Symbol("call") => {
+        // (:call fn args) | fn
+        _ => {
             let prototype = lower_function_prototype(sexp)?;
             let body = None;
             Function { prototype, body }
         }
-        _ => bail!("unable to parse 'fn' form"),
     };
 
     Ok(f)
@@ -230,12 +238,14 @@ fn lower_function_prototype(sexp: &SExp) -> Result<FunctionPrototype> {
                 .ok_or_else(|| anyhow!("result type must be a symbol, given: {}", v[3]))?;
             (&v[2], symbol(result_type))
         }
-        // (:call name params...)
-        SExp::List(v) if v[0] == SExp::Symbol("call") => (sexp, symbol("Any")),
-        _ => bail!("unable to parse function prototype: {}", sexp),
+        // (:call name params...) | name
+        _ => (sexp, symbol("Any")),
     };
 
     let (name, params) = match proto {
+        // name
+        SExp::Symbol(name) => (symbol(name), vec![]),
+        // (:call name params...)
         SExp::List(v) if v[0] == SExp::Symbol("call") => {
             let name = v[1]
                 .as_symbol()

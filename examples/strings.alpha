@@ -1,6 +1,6 @@
-"hello, world!"
+"hello, world!".println()
 
-print("hi, there!")
+println("hi, there!")
 
 # expected stdout:
 # hello, world!

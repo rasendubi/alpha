@@ -78,6 +78,7 @@ impl InlineVarAlias {
                 self.collect_exp(&f.body);
             }
             Exp::Apply { .. } => {}
+            Exp::GlobalRef(..) => {}
         }
     }
 
@@ -149,6 +150,7 @@ impl InlineVarAlias {
                 f: self.traverse_var(*f),
                 args: args.iter().map(|a| self.traverse_var(*a)).collect(),
             },
+            Exp::GlobalRef(ty, name) => Exp::GlobalRef(self.traverse_type(ty), name.clone()),
         }
     }
 

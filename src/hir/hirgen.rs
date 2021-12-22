@@ -5,7 +5,7 @@ use crate::hir::inline_var_alias::*;
 use crate::hir::*;
 use crate::{symbol, Symbol};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 
@@ -169,6 +169,15 @@ impl<'a> Ctx<'a> {
                     self.module.decls.push(Decl::AddMethod { ty: fn_t, method });
                 }
             }
+            exp::Exp::Annotation { annotation, exp } => match &**annotation {
+                exp::Exp::Call(exp::Call { fun, args }) => match &**fun {
+                    exp::Exp::Symbol(name) if *name == symbol("intrinsic") => {
+                        self.compile_intrinsic(global_env, args, exp)?;
+                    }
+                    _ => bail!("unknown annotation: {:?}", annotation),
+                },
+                _ => bail!("unknown annotation: {:?}", annotation),
+            },
             e => {
                 // some expression -> compile anonymous fn
                 let v = genglobal();
@@ -186,6 +195,51 @@ impl<'a> Ctx<'a> {
             }
         }
         Ok(())
+    }
+
+    fn compile_intrinsic(&mut self, env: &mut Env, args: &[exp::Exp], e: &exp::Exp) -> Result<()> {
+        let intrinsic_name = match args {
+            [exp::Exp::String(s)] => s,
+            _ => bail!("@intrinsic() argument must be a string. Given: {:?}", args),
+        };
+        let f = match e {
+            exp::Exp::Function(f) => f,
+            _ => bail!(
+                "@intrinsic() can only be attached to function declaration. Given: {:?}",
+                e
+            ),
+        };
+        if let Some(body) = &f.body {
+            bail!(
+                "@intrinsic() function must not have a body. Given: {:?}",
+                body
+            );
+        }
+
+        let fn_t = self.ensure_fn_t(env, f.prototype.name)?;
+        let method = genglobal();
+        let ty = self.fn_type(env, &f.prototype)?;
+        self.module.decls.push(Decl::Global {
+            name: None,
+            v: method,
+            ty: ty.clone(),
+            value: Some(Exp::GlobalRef(ty, intrinsic_name.clone())),
+        });
+        self.module.decls.push(Decl::AddMethod { ty: fn_t, method });
+
+        Ok(())
+    }
+
+    fn fn_type(&self, env: &Env, f: &exp::FunctionPrototype) -> Result<hir::Type> {
+        // TODO: if we're adding a constructor, this has to be a Type::Type
+        let this_t = Type::T(*ANY_T_V);
+        let fn_params = std::iter::once(Ok(this_t))
+            .chain(f.params.iter().map(|p| self.lookup_type(env, p.typ)))
+            .collect::<Result<Vec<_>>>()?;
+        let retty = self.lookup_type(env, f.result_type)?;
+        let ty = Type::Fn(fn_params, Box::new(retty.clone()));
+
+        Ok(ty)
     }
 
     fn compile_global_fn(&mut self, global_env: &mut Env, f: &exp::Function) -> Result<Var> {
@@ -314,8 +368,9 @@ impl<'a> Ctx<'a> {
             exp::Exp::String(s) => Exp::StringLiteral(s.clone()),
             exp::Exp::Block(es) => self.compile_block(env, es)?,
 
-            exp::Exp::Type(_) => todo!("non-top-level types are not supported yet"),
-            exp::Exp::Function(_) => todo!("non-top-level functions are not supported yet"),
+            exp::Exp::Annotation { .. } => bail!("non-top-level annotation are not supported yet"),
+            exp::Exp::Type(_) => bail!("non-top-level types are not supported yet"),
+            exp::Exp::Function(_) => bail!("non-top-level functions are not supported yet"),
         };
 
         Ok(res)

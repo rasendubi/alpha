@@ -101,6 +101,8 @@ pub enum Exp {
         f: Var,
         args: Vec<Var>,
     },
+
+    GlobalRef(Type, String),
 }
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub struct Fn {
@@ -266,6 +268,9 @@ impl std::fmt::Debug for Exp {
                     write!(f, "{:?}", a)?;
                 }
                 write!(f, ")")?;
+            }
+            Exp::GlobalRef(ty, name) => {
+                write!(f, "global_ref {:?}: {:?}", name, ty)?;
             }
         };
 

@@ -87,6 +87,9 @@ fn traverse_exp(free_vars: &mut HashSet<Var>, e: &Exp) {
             traverse_var(free_vars, *f);
             args.iter().for_each(|v| traverse_var(free_vars, *v));
         }
+        Exp::GlobalRef(ty, _name) => {
+            traverse_type(free_vars, ty);
+        }
     }
 }
 

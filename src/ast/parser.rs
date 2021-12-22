@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::iter::{FromIterator, Peekable};
 
 use anyhow::{anyhow, bail, Result};
-
 use logos::{Lexer, Logos};
+use tracing::trace;
 
 use crate::ast::lexer::Token;
 use crate::ast::sexp::SExp;
@@ -83,6 +83,7 @@ impl<'a> Parser<'a> {
             { Integer          => prefix: parse_integer                        },
             { Float            => prefix: parse_float                          },
             { String           => prefix: parse_string                         },
+            { Symbol("@")      => prefix: parse_annotation                     },
             { Symbol("fn")     => prefix: parse_fn                             },
             { Symbol("type")   => prefix: parse_type                           },
             { Symbol("{")      => prefix: parse_block                          },
@@ -126,11 +127,13 @@ impl<'a> Parser<'a> {
         self.parse_precedence(0)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn parse_precedence(&mut self, precedence: usize) -> Result<SExp<'a>> {
         let token = self
             .lexer
             .peek()
             .ok_or_else(|| anyhow!("unexpected end of input"))?;
+        trace!("prefix: {:?}", token);
         let prefix_parser = self
             .parse_table
             .get(&token.into())
@@ -144,6 +147,7 @@ impl<'a> Parser<'a> {
                 Some(token) => token,
                 _ => return Ok(left),
             };
+            trace!("infix: {:?}", token);
             let infix = match self
                 .parse_table
                 .get(&token.into())
@@ -171,6 +175,17 @@ impl<'a> Parser<'a> {
             _ => bail!("identifier expected"),
         }
     }
+}
+
+fn parse_annotation<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
+    p.lexer.next(); // @
+
+    let mut e = Vec::new();
+    e.push(SExp::Symbol("annotation"));
+    e.push(p.parse_precedence(90)?);
+    e.push(p.parse_precedence(90)?);
+
+    Ok(SExp::List(e))
 }
 
 fn parse_fn<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {

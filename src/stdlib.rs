@@ -33,13 +33,11 @@ pub unsafe extern "C" fn mk_str(p: *const u8, len: u64) -> AnyPtr {
 }
 
 #[tracing::instrument]
-pub unsafe extern "C" fn alpha_f64_mul(args: *const SVec) -> AnyPtr {
+pub unsafe extern "C" fn alpha_type_of(args: *const SVec) -> AnyPtr {
     let args = (*args).elements();
-    let x: *const AlphaF64 = args[1].cast();
-    let y: *const AlphaF64 = args[2].cast();
-    trace!("alpha_f64_mul({:?}, {:?})", *x, *y);
-    let result = (*x).value * (*y).value;
-    AlphaF64::allocate(result).cast()
+    let x = args[1];
+    trace!("alpha_type_of({:?})", x);
+    type_of(x) as AnyPtr
 }
 
 #[tracing::instrument]
@@ -53,11 +51,13 @@ pub unsafe extern "C" fn alpha_i64_mul(args: *const SVec) -> AnyPtr {
 }
 
 #[tracing::instrument]
-pub unsafe extern "C" fn alpha_type_of(args: *const SVec) -> AnyPtr {
+pub unsafe extern "C" fn alpha_f64_mul(args: *const SVec) -> AnyPtr {
     let args = (*args).elements();
-    let x = args[1];
-    trace!("alpha_type_of({:?})", x);
-    type_of(x) as AnyPtr
+    let x: *const AlphaF64 = args[1].cast();
+    let y: *const AlphaF64 = args[2].cast();
+    trace!("alpha_f64_mul({:?}, {:?})", *x, *y);
+    let result = (*x).value * (*y).value;
+    AlphaF64::allocate(result).cast()
 }
 
 #[tracing::instrument]

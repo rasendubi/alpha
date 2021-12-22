@@ -3,7 +3,7 @@ type X = {}
 fn x(_: X) = 1
 fn x(_: X) = 2
 
-x(X())
+x(X()).println()
 
 # expected stderr:
 # warning: re-defining method

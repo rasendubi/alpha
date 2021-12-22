@@ -4,11 +4,11 @@ type X = { x, y }
 
 type Y = { x, y }
 
-fn print(x: X) = "X"
-fn print(y: Y) = "Y"
+fn print(x: X) = print("X")
+fn print(y: Y) = print("Y")
 
-X(1, 2).print()
-Y(1, 2).print()
+X(1, 2).println()
+Y(1, 2).println()
 
 # expected stdout:
 # X

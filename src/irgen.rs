@@ -17,7 +17,6 @@ pub struct IrGen<'a, 'ctx> {
     context: &'ctx Context,
     input: &'a hir::Module,
     module: Module,
-    // global_env: &'a Env<'a, EnvValue>,
 }
 
 /// A single-function compiler context.
@@ -201,14 +200,27 @@ impl<'a, 'ctx> IrGen<'a, 'ctx> {
                     value,
                 } => {
                     let name = Self::var_to_global_name(*v);
-                    let ty = self.resolve_type(ty)?;
-                    if ty.kind() == TypeKind::LLVMFunctionTypeKind {
-                        let f = self.module.add_function(&name, ty);
-                        f.set_gc("shadow-stack");
-                    } else if self.module.get_global(&name).is_none() {
-                        let g = self.module.add_global(&name, ty);
-                        if value.is_some() {
-                            g.global_set_initializer(ty.const_null());
+                    if get_any_global(&self.module, &name).is_some() {
+                        // already declared
+                    } else {
+                        let ty = self.resolve_type(ty)?;
+                        match value {
+                            Some(hir::Exp::Fn(..)) => {
+                                let f = self.module.add_function(&name, ty);
+                                f.set_gc("shadow-stack");
+                            }
+                            Some(hir::Exp::GlobalRef(..)) => {
+                                // Do nothing.
+                                //
+                                // GlobalRef is used to declare an alias—they are resolved in
+                                // `var_place()`.
+                            }
+                            value => {
+                                let g = self.module.add_global(&name, ty);
+                                if value.is_some() {
+                                    g.global_set_initializer(ty.const_null());
+                                }
+                            }
                         }
                     }
                 }
@@ -391,7 +403,9 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
                     v,
                     ty: _,
                     value: Some(value),
-                } if !matches!(value, hir::Exp::Fn(..)) => {
+                } if !matches!(value, hir::Exp::Fn(..))
+                    && !matches!(value, hir::Exp::GlobalRef(..)) =>
+                {
                     let v_name = Self::var_name(*v);
                     let value = self.compile_exp(value, &format!("{}.in", v_name))?;
                     let g = self.var_place(*v);
@@ -612,9 +626,39 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
                 let result = self.builder.build_call(f, &args, name);
                 result
             }
-            e => bail!("compile_exp(): not supported {:?}", e),
+            Exp::Fn(_) => bail!("non-top-level fn are not supported yet"),
+            Exp::GlobalRef(ty, gname) => {
+                let ty = self.irgen.resolve_type(ty)?;
+                let g = get_any_global(&self.module, gname).map_or_else::<Result<_>, _, _>(
+                    || {
+                        let g = if ty.kind() == TypeKind::LLVMFunctionTypeKind {
+                            self.module.add_function(gname, ty)
+                        } else {
+                            self.module.add_global(gname, ty)
+                        };
+                        Ok(g)
+                    },
+                    Ok,
+                )?;
+                if ty.kind() == TypeKind::LLVMFunctionTypeKind {
+                    g
+                } else {
+                    self.builder.build_load(g, name)
+                }
+            }
         };
         Ok(result)
+    }
+
+    /// Get or declare a global reference with `name` and type `ty`.
+    fn global_ref(&mut self, name: &str, ty: Type) -> Value {
+        get_any_global(&self.module, name).unwrap_or_else(|| {
+            if ty.kind() == TypeKind::LLVMFunctionTypeKind {
+                self.module.add_function(name, ty)
+            } else {
+                self.module.add_global(name, ty)
+            }
+        })
     }
 
     fn compile_datatype(&mut self, typedef: &hir::TypeDef, name: &str) -> Result<Value> {
@@ -701,7 +745,13 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
             let ptr_offset = llvm_ty
                 .pointer_type(AddressSpace::Generic)
                 .const_null()
-                .const_gep(&[self.context.int_type(64).const_int(i as u64, false)])
+                .const_in_bounds_gep(
+                    llvm_ty,
+                    &[
+                        self.context.int_type(32).const_int(0, false),
+                        self.context.int_type(32).const_int(i as u64, false),
+                    ],
+                )
                 .const_ptr_to_int(self.context.int_type(64));
             let ptr_ptr = self.builder.build_gep(
                 pointers_ptr,
@@ -818,14 +868,26 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
             place
         }
     }
-    fn var_place(&self, var: Var) -> Value {
+    fn var_place(&mut self, var: Var) -> Value {
         match var {
             Var::Local(_) => *self.vars.get(&var).unwrap(),
             Var::Global(_) => {
                 let name = IrGen::var_to_global_name(var);
-                self.module
-                    .get_global(&name)
-                    .or_else(|| self.module.get_function(&name))
+                get_any_global(&self.module, &name)
+                    .or_else(|| {
+                        self.irgen.input.decls.iter().find_map(|d| match d {
+                            hir::Decl::Global {
+                                name: _,
+                                v,
+                                ty: _,
+                                value: Some(hir::Exp::GlobalRef(ty, name)),
+                            } if *v == var => {
+                                let ty = self.irgen.resolve_type(ty).unwrap();
+                                Some(self.global_ref(name, ty))
+                            }
+                            _ => None,
+                        })
+                    })
                     .ok_or_else(|| anyhow!("var_place(): unable to find place for {:?}", var))
                     .unwrap()
             }
@@ -876,4 +938,10 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
             Var::Local(v) => format!("v{}", v),
         }
     }
+}
+
+fn get_any_global(module: &Module, name: &str) -> Option<Value> {
+    module
+        .get_global(name)
+        .or_else(|| module.get_function(name))
 }
