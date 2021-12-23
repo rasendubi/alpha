@@ -162,10 +162,10 @@ impl<'a> Ctx<'a> {
             }
             EExp::Function(f) => {
                 // global fn -> add method
-                let fn_t = self.ensure_fn_t(global_env, f.prototype.name)?;
+                let (fn_t, fn_obj) = self.ensure_global_fn(global_env, f.prototype.name)?;
                 if f.body.is_some() {
                     // if there is no body -> declare the function, but do not attach any methods
-                    let method = self.compile_global_fn(global_env, f)?;
+                    let method = self.compile_global_fn(fn_t, fn_obj, global_env, f)?;
                     self.module.decls.push(Decl::AddMethod { ty: fn_t, method });
                 }
             }
@@ -216,9 +216,9 @@ impl<'a> Ctx<'a> {
             );
         }
 
-        let fn_t = self.ensure_fn_t(env, f.prototype.name)?;
+        let (fn_t, fn_obj) = self.ensure_global_fn(env, f.prototype.name)?;
         let method = genglobal();
-        let ty = self.fn_type(env, &f.prototype)?;
+        let ty = self.fn_type(env, fn_t, fn_obj, &f.prototype)?;
         self.module.decls.push(Decl::Global {
             name: None,
             v: method,
@@ -230,9 +230,14 @@ impl<'a> Ctx<'a> {
         Ok(())
     }
 
-    fn fn_type(&self, env: &Env, f: &exp::FunctionPrototype) -> Result<hir::Type> {
-        // TODO: if we're adding a constructor, this has to be a Type::Type
-        let this_t = Type::T(*ANY_T_V);
+    fn fn_type(
+        &self,
+        env: &Env,
+        fn_t: Var,
+        fn_obj: Var,
+        f: &exp::FunctionPrototype,
+    ) -> Result<hir::Type> {
+        let this_t = get_this_t(fn_t, fn_obj);
         let fn_params = std::iter::once(Ok(this_t))
             .chain(f.params.iter().map(|p| self.lookup_type(env, p.typ)))
             .collect::<Result<Vec<_>>>()?;
@@ -242,7 +247,13 @@ impl<'a> Ctx<'a> {
         Ok(ty)
     }
 
-    fn compile_global_fn(&mut self, global_env: &mut Env, f: &exp::Function) -> Result<Var> {
+    fn compile_global_fn(
+        &mut self,
+        fn_t: Var,
+        fn_obj: Var,
+        global_env: &mut Env,
+        f: &exp::Function,
+    ) -> Result<Var> {
         let exp::Function {
             prototype:
                 exp::FunctionPrototype {
@@ -255,8 +266,7 @@ impl<'a> Ctx<'a> {
 
         let v = genglobal();
 
-        // TODO: if we're adding a constructor, this has to be a Type::Type
-        let this_t = Type::T(*ANY_T_V);
+        let this_t = get_this_t(fn_t, fn_obj);
         let fn_params = std::iter::once(Ok((genvar(), this_t)))
             .chain(
                 params
@@ -482,16 +492,17 @@ impl<'a> Ctx<'a> {
 
     fn compile_accessors(&mut self, env: &mut Env, ty: Var, typedef: &TypeDef) -> Result<()> {
         for (i, (name, t)) in typedef.fields.iter().enumerate() {
-            let fn_t = self.ensure_fn_t(env, *name)?;
+            let (fn_t, fn_obj) = self.ensure_global_fn(env, *name)?;
 
             let v = genglobal();
             let this = genvar();
+            let this_t = get_this_t(fn_t, fn_obj);
             self.module.decls.push(Decl::Global {
                 name: None,
                 v,
-                ty: Type::Fn(vec![Type::T(*ANY_T_V), Type::T(ty)], Box::new(t.clone())),
+                ty: Type::Fn(vec![this_t.clone(), Type::T(ty)], Box::new(t.clone())),
                 value: Some(Exp::Fn(Fn {
-                    params: vec![(genvar(), Type::T(*ANY_T_V)), (this, Type::T(ty))],
+                    params: vec![(genvar(), this_t), (this, Type::T(ty))],
                     retty: t.clone(),
                     body: Box::new(Exp::Select {
                         value: this,
@@ -523,7 +534,7 @@ impl<'a> Ctx<'a> {
             .ok_or_else(|| anyhow!("unable to get var type for {:?}", var))
     }
 
-    fn ensure_fn_t(&mut self, env: &mut Env, name: Symbol) -> Result<Var> {
+    fn ensure_global_fn(&mut self, env: &mut Env, name: Symbol) -> Result<(Var, Var)> {
         let fn_obj = match env.lookup(name).cloned() {
             Some(fn_obj) => fn_obj,
             None => {
@@ -559,10 +570,10 @@ impl<'a> Ctx<'a> {
         let fn_ty = self.var_type(fn_obj)?;
         let fn_t = match fn_ty {
             Type::T(v) => v,
-            _ => panic!("ensure_fn_t: wrong function type: {:?}", fn_ty),
+            _ => panic!("ensure_global_fn: wrong function type: {:?}", fn_ty),
         };
 
-        Ok(fn_t)
+        Ok((fn_t, fn_obj))
     }
 
     fn to_typedef(&self, env: &Env, def: &exp::TypeDefinition) -> Result<TypeDef> {
@@ -612,5 +623,13 @@ impl<'a> Ctx<'a> {
         env.lookup(name)
             .map(|ev| Type::T(*ev))
             .ok_or_else(|| anyhow!("unable to find type: {}", name))
+    }
+}
+
+fn get_this_t(fn_t: Var, fn_obj: Var) -> Type {
+    if fn_t == *DATATYPE_T_V {
+        Type::Type(fn_obj)
+    } else {
+        Type::T(*ANY_T_V)
     }
 }

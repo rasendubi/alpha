@@ -1,0 +1,17 @@
+# All constructors are attached to DataType type. This test ensures
+# that constructors from different types do not conflict.
+type X = {x}
+type Y = {y}
+
+fn print(x: X) = print("X")
+fn print(y: Y) = print("Y")
+
+fn X() = X(0)
+fn Y() = Y(0)
+
+println(X())
+println(Y())
+
+# expected stdout:
+# X
+# Y
