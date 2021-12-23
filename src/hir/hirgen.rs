@@ -169,6 +169,18 @@ impl<'a> Ctx<'a> {
                     self.module.decls.push(Decl::AddMethod { ty: fn_t, method });
                 }
             }
+            EExp::Let(name, e) => {
+                let v = genglobal();
+                let e = self.compile_exp(global_env, e)?;
+                self.module.decls.push(Decl::Global {
+                    name: Some(*name),
+                    v,
+                    // TODO: typing
+                    ty: Type::T(*ANY_T_V),
+                    value: Some(e),
+                });
+                global_env.insert(*name, v);
+            }
             exp::Exp::Annotation { annotation, exp } => match &**annotation {
                 exp::Exp::Call(exp::Call { fun, args }) => match &**fun {
                     exp::Exp::Symbol(name) if *name == symbol("intrinsic") => {
@@ -377,6 +389,7 @@ impl<'a> Ctx<'a> {
             exp::Exp::String(s) => Exp::StringLiteral(s.clone()),
             exp::Exp::Block(es) => self.compile_block(env, es)?,
 
+            exp::Exp::Let(..) => bail!("non-top-level let is not supported yet"),
             exp::Exp::Annotation { .. } => bail!("non-top-level annotation are not supported yet"),
             exp::Exp::Type(_) => bail!("non-top-level types are not supported yet"),
             exp::Exp::Function(_) => bail!("non-top-level functions are not supported yet"),

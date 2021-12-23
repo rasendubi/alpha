@@ -403,6 +403,12 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
                     let v_name = Self::var_name(*v);
                     let value = self.compile_exp(value, &format!("{}.in", v_name))?;
                     let g = self.var_place(*v);
+                    // TODO: remove this cast when hirgen can generate proper types for global vars
+                    let value = self.builder.build_pointer_cast(
+                        value,
+                        g.get_type().element_type(),
+                        &format!("{}.in.as_target", v_name),
+                    );
                     self.builder.build_store(g, value);
                 }
                 _ => {}
@@ -833,9 +839,6 @@ impl<'a, 'ctx> FnGen<'a, 'ctx> {
             &[self.context.int_type(64).const_int(-1_i64 as u64, true)],
             &format!("{}.typetag", ptr.get_name()),
         );
-        // let tag = self
-        //     .builder
-        //     .build_load(tag, &format!("{}.typetag.in", ptr.get_name()));
         self.builder.build_store(typetag_ptr, tag);
 
         Ok(())

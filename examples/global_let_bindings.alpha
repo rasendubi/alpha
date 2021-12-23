@@ -1,0 +1,12 @@
+# Test for global let bindings
+let z = 13
+let comma = ", "
+let newline = "\n"
+
+print(z)
+print(comma)
+print(z)
+print(newline)
+
+# expected stdout:
+# 13, 13

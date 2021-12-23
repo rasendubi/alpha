@@ -86,6 +86,7 @@ impl<'a> Parser<'a> {
             { Symbol("@")      => prefix: parse_annotation                     },
             { Symbol("fn")     => prefix: parse_fn                             },
             { Symbol("type")   => prefix: parse_type                           },
+            { Symbol("let")    => prefix: parse_let                            },
             { Symbol("{")      => prefix: parse_block                          },
 
             { Symbol("=")      =>                      infix: 10, parse_binary },
@@ -175,6 +176,14 @@ impl<'a> Parser<'a> {
             _ => bail!("identifier expected"),
         }
     }
+
+    fn expect(&mut self, token: Token) -> Result<()> {
+        let next = self.lexer.next();
+        if next.as_ref() != Some(&token) {
+            bail!("{:?} expected, {:?} found", token, next);
+        }
+        Ok(())
+    }
 }
 
 fn parse_annotation<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
@@ -195,11 +204,15 @@ fn parse_fn<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
 
 fn parse_type<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
     p.lexer.next(); // type
-    let mut expr = Vec::with_capacity(3);
-    expr.push(SExp::Symbol("type"));
-    expr.push(p.parse_expr()?);
+    Ok(SExp::List(vec![SExp::Symbol("type"), p.parse_expr()?]))
+}
 
-    Ok(SExp::List(expr))
+fn parse_let<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {
+    p.lexer.next(); // let
+    let mut v = vec![SExp::Symbol("let"), p.parse_symbol()?];
+    p.expect(Token::Symbol("="))?;
+    v.push(p.parse_expr()?);
+    Ok(SExp::List(v))
 }
 
 fn parse_integer<'a>(p: &mut Parser<'a>) -> Result<SExp<'a>> {

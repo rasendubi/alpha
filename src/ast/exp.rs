@@ -11,6 +11,7 @@ pub enum Exp {
     Type(TypeDefinition),
     /// Function declaration/definition
     Function(Function),
+    Let(Symbol, Box<Exp>),
     Call(Call),
     /// Symbol (variable) reference.
     Symbol(Symbol),
@@ -80,6 +81,11 @@ pub fn lower_sexp(sexp: &SExp) -> Result<Exp> {
         SExp::List(v) => match v[0].as_symbol().expect("list head is not a symbol") {
             "type" => Exp::Type(lower_type_definition(&v[1])?),
             "fn" => Exp::Function(lower_function(&v[1])?),
+            "let" => {
+                let name = symbol(v[1].as_symbol().unwrap());
+                let exp = Box::new(lower_sexp(&v[2])?);
+                Exp::Let(name, exp)
+            }
             "call" => {
                 let fun = Box::new(lower_sexp(&v[1])?);
                 let mut args = Vec::new();
