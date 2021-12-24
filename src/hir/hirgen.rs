@@ -389,7 +389,8 @@ impl<'a> Ctx<'a> {
             exp::Exp::String(s) => Exp::StringLiteral(s.clone()),
             exp::Exp::Block(es) => self.compile_block(env, es)?,
 
-            exp::Exp::Let(..) => bail!("non-top-level let is not supported yet"),
+            exp::Exp::Let(..) => bail!("'let's are only allowed on top-level or inside of blocks. 'let' occurs outside of block"),
+
             exp::Exp::Annotation { .. } => bail!("non-top-level annotation are not supported yet"),
             exp::Exp::Type(_) => bail!("non-top-level types are not supported yet"),
             exp::Exp::Function(_) => bail!("non-top-level functions are not supported yet"),
@@ -421,12 +422,20 @@ impl<'a> Ctx<'a> {
         Ok(result)
     }
 
-    fn compile_exps_rest(&self, env: &Env, es: &[exp::Exp], or_else: Var) -> Result<Exp> {
+    fn compile_exps_rest(&self, env: &mut Env, es: &[exp::Exp], or_else: Var) -> Result<Exp> {
         match es {
             [] => Ok(Exp::Var(or_else)),
             [e, rest @ ..] => {
                 let v = genvar();
-                let value = Box::new(self.compile_exp(env, e)?);
+                let (name, value) = if let EExp::Let(name, value) = e {
+                    (Some(name), &**value)
+                } else {
+                    (None, e)
+                };
+                let value = Box::new(self.compile_exp(env, value)?);
+                if let Some(name) = name {
+                    env.insert(*name, v);
+                }
                 let e = Box::new(self.compile_exps_rest(env, rest, v)?);
                 Ok(Exp::Let {
                     v,
@@ -439,9 +448,11 @@ impl<'a> Ctx<'a> {
         }
     }
     fn compile_block(&self, env: &Env, es: &[exp::Exp]) -> Result<Exp> {
+        let mut env = Env::new(Some(env));
+
         let v = genvar();
         let value = Box::new(Exp::Var(*VOID_V));
-        let e = Box::new(self.compile_exps_rest(env, es, v)?);
+        let e = Box::new(self.compile_exps_rest(&mut env, es, v)?);
         Ok(Exp::Let {
             v,
             ty: Type::T(*VOID_T_V),

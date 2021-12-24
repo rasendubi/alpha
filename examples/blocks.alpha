@@ -1,0 +1,8 @@
+# Test that blocks return values
+{
+  let x = 2 * 3
+  x
+}.println()
+
+# expected stdout:
+# 6

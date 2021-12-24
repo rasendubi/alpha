@@ -1,0 +1,18 @@
+# Test that let works inside blocks
+
+{
+  let x = 2
+  println(x)
+}
+
+fn hello() = {
+  let world = "world!"
+  print("Hello, ")
+  println(world)
+}
+
+hello()
+
+# expected stdout:
+# 2
+# Hello, world!
